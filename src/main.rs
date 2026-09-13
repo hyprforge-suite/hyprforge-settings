@@ -1,6 +1,8 @@
+mod ipc;
 mod look;
 mod module;
 mod modules;
+mod singleton;
 
 use hyprforge_ui::theme::{app_theme, spacing, surface, FontScale, text_dim};
 use hyprforge_ui::widgets::{primary_button, scaled_text, secondary_button};
@@ -58,6 +60,15 @@ fn screen_from_cli(name: &str) -> Option<(Screen, Option<modules::desktop::Tab>)
     Some(screen)
 }
 
+/// The same validity check `--screen` uses, wrapped as a plain `fn(&str)
+/// -> bool` so `ipc::handle_line` can validate a `show-screen` request
+/// without knowing what a `Screen` is — one source of truth for "which
+/// names are screens" shared between the command line and the control
+/// socket.
+pub(crate) fn screen_name_is_known(name: &str) -> bool {
+    screen_from_cli(name).is_some()
+}
+
 /// Every name [`screen_from_cli`] accepts, for the usage message. The
 /// aliases are deliberately left out: one canonical name per screen is
 /// what a help text is for.
@@ -80,6 +91,16 @@ const SCREEN_NAMES: &[&str] = &[
 
 const SIDEBAR_WIDTH: f32 = 240.0;
 const CONTENT_MAX_WIDTH: f32 = 880.0;
+
+/// This window's application id (X11 `WM_CLASS` / Wayland `app_id`).
+/// Without setting `platform_specific.application_id` explicitly, iced's
+/// default is an empty string (see `iced_core::window::settings::linux`),
+/// which leaves nothing for Hyprland to select this window by — and
+/// `focus_self` below needs exactly that to bring an already-running
+/// window to the front for a second invocation that handed its request
+/// off instead of opening its own. Matches the `.desktop` file's own
+/// basename, per iced's own suggested convention.
+const APP_ID: &str = "hyprforge-settings";
 
 /// Set once from `--screen` before iced starts. A static because
 /// `iced::daemon` builds the app from a function taking no arguments.
@@ -125,6 +146,14 @@ fn main() -> iced::Result {
     // pulling an argument parser into a GUI's dependency graph, and the
     // whole surface is visible here.
     let mut args = std::env::args().skip(1);
+    // The raw string, not the parsed `Screen` — this is what travels over
+    // the control socket if another instance turns out to already be
+    // running (see below). The running instance validates it again
+    // independently through the same `screen_from_cli`, so there is one
+    // source of truth either way; this process validating it too, up
+    // front, is what lets a typo be reported here even when nothing is
+    // running yet to hand it off to.
+    let mut requested_screen: Option<String> = None;
     while let Some(arg) = args.next() {
         let value = match arg.as_str() {
             "--screen" => args.next(),
@@ -140,6 +169,7 @@ fn main() -> iced::Result {
                 if let Some(tab) = tab {
                     INITIAL_DESKTOP_TAB.set(tab).ok().unwrap_or(());
                 }
+                requested_screen = Some(value);
             }
             None => {
                 // Naming a screen that does not exist is a typo worth
@@ -150,6 +180,52 @@ fn main() -> iced::Result {
             }
         }
     }
+
+    // One Settings window, ever: a second invocation (the tray spawns
+    // `hyprforge-settings --screen <name>` fresh on every click) must
+    // hand its request off to whichever instance is already running
+    // rather than opening a second window somewhere else. See
+    // `singleton.rs` for why this is an `flock`, not a PID file or a
+    // `pgrep` on a name over 15 characters.
+    //
+    // Kept alive for as long as this `main` runs (nothing here ever drops
+    // it early) — the lock covers the process's entire lifetime, not just
+    // this check.
+    let _singleton_lock = match singleton::acquire(&singleton::lock_path()) {
+        Ok(Some(lock)) => Some(lock),
+        Ok(None) => {
+            // Another hyprforge-settings is already running. Handing this
+            // off and exiting quietly and successfully is the whole
+            // point — a tray click finding Settings already open is not
+            // an error, and opening a second window here is exactly the
+            // bug this exists to fix.
+            let result = match &requested_screen {
+                Some(name) => ipc::request_show_screen(name),
+                None => ipc::request_focus(),
+            };
+            if let Err(e) = result {
+                // Nothing to do about it from here: the request just
+                // silently doesn't reach the running window this time.
+                // Never printed as an alarming failure — this process is
+                // still exiting 0, because a menu click is not an error.
+                tracing::debug!(
+                    error = %e,
+                    "could not hand off to the already-running hyprforge-settings"
+                );
+            }
+            return Ok(());
+        }
+        Err(e) => {
+            // A broken lock (an unwritable runtime directory, say) must
+            // never lock the app out entirely — start normally, same as
+            // if this were the only instance.
+            tracing::warn!(
+                error = %e,
+                "could not check whether hyprforge-settings is already running; starting normally"
+            );
+            None
+        }
+    };
 
     iced::daemon(App::new, App::update, App::view)
         .title(App::title)
@@ -164,6 +240,14 @@ fn main_window_settings() -> window::Settings {
         size: Size::new(1000.0, 700.0),
         min_size: Some(Size::new(760.0, 520.0)),
         position: window::Position::Centered,
+        // See `APP_ID`'s doc: without this, Hyprland has nothing to
+        // select this window by, and `focus_self` (used when a second
+        // invocation hands its `--screen` off instead of opening its
+        // own window) has nothing to target.
+        platform_specific: window::settings::PlatformSpecific {
+            application_id: APP_ID.to_string(),
+            ..window::settings::PlatformSpecific::default()
+        },
         ..window::Settings::default()
     }
 }
@@ -243,6 +327,55 @@ async fn pin_revert_popup() {
                 tracing::debug!(error = %e, "could not run hyprctl to pin the revert prompt");
                 return;
             }
+        }
+    }
+}
+
+/// Focus is `hl.dsp.focus({ window = selector })`, and the verb was
+/// checked against the running compositor rather than inferred from the
+/// `float`/`pin` calls above it. The obvious guess —
+/// `hl.dsp.window.focuswindow`, matching the shorthand `pin_revert_popup`
+/// uses and Hyprland's own dispatcher name — does not exist here: the
+/// compositor answers "attempt to call a nil value (field
+/// 'focuswindow')". `hyprforge-shortcuts`'s catalogue agrees, carrying
+/// this one as a bare `focus`.
+///
+/// A selector matching nothing comes back as "hl.focus: window not
+/// found", which is what distinguishes "the right name" from "a name
+/// that parses" — and is how this one was confirmed. A wrong verb would
+/// cost only a logged warning, never a broken screen switch, which is
+/// exactly why it was worth checking rather than trusting.
+async fn focus_self() {
+    let selector = format!("[[class:^{APP_ID}$]]");
+    // `hl.dsp.focus`, top level — not `hl.dsp.window.focuswindow`, which
+    // does not exist: the compositor answers "attempt to call a nil
+    // value (field 'focuswindow')". Checked against the running
+    // compositor rather than guessed, the way CLAUDE.md says every claim
+    // about somebody else's interface has to be, and it agrees with
+    // `hyprforge-shortcuts`'s catalogue, which also has this dispatcher
+    // as a bare `focus`. A selector that matches nothing comes back as
+    // "hl.focus: window not found", which is how this was confirmed to
+    // be the right name rather than merely a name that parses.
+    let call = format!("hl.dsp.focus({{ window = {selector} }})");
+    let dispatched = tokio::time::timeout(
+        hyprforge_core::command::TIMEOUT,
+        tokio::process::Command::new("hyprctl").arg("dispatch").arg(&call).output(),
+    )
+    .await;
+    match dispatched.unwrap_or_else(|_| {
+        Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "hyprctl did not answer"))
+    }) {
+        Ok(out) => {
+            let body = String::from_utf8_lossy(&out.stdout);
+            if !body.trim().eq_ignore_ascii_case("ok") {
+                tracing::warn!(
+                    response = %body.trim(),
+                    "hyprctl rejected the focus dispatch; the settings window may not have been raised"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "could not run hyprctl to focus the settings window");
         }
     }
 }
@@ -340,6 +473,10 @@ enum Message {
     WindowOpened(window::Id),
     WindowClosed(window::Id),
     RevertPopupOpened(window::Id),
+    /// Something arrived on the control socket — see `ipc.rs`. A second
+    /// `hyprforge-settings` invocation found this one already running and
+    /// handed its request off instead of opening its own window.
+    ExternalRequest(ipc::Signal),
     Noop,
 }
 
@@ -563,6 +700,24 @@ impl App {
                 }
                 Task::none()
             }
+            Message::ExternalRequest(signal) => {
+                if let ipc::Signal::ShowScreen(name) = signal {
+                    // Validated once already by the socket server (see
+                    // `ipc.rs`'s `handle_line`) against the same
+                    // `screen_name_is_known` this resolves through, so
+                    // `None` here should not happen in practice — but a
+                    // request that somehow named nothing real still just
+                    // falls through to "focus only" rather than panicking
+                    // or navigating nowhere.
+                    if let Some((screen, tab)) = screen_from_cli(&name) {
+                        self.screen = screen;
+                        if let Some(tab) = tab {
+                            self.desktop.open_on(tab);
+                        }
+                    }
+                }
+                Task::perform(focus_self(), |()| Message::Noop)
+            }
             Message::Noop => Task::none(),
             Message::WindowRules(msg) => self.window_rules.update(msg).map(Message::WindowRules),
             Message::Shortcuts(msg) => self.shortcuts.update(msg).map(Message::Shortcuts),
@@ -772,6 +927,7 @@ impl App {
                 self.network.subscription().map(Message::Network),
                 self.bluetooth.subscription().map(Message::Bluetooth),
                 window::close_events().map(Message::WindowClosed),
+                Subscription::run(ipc_stream),
             ]);
         }
 
@@ -802,8 +958,40 @@ impl App {
             self.bluetooth.subscription().map(Message::Bluetooth),
             shortcuts,
             window::close_events().map(Message::WindowClosed),
+            Subscription::run(ipc_stream),
         ])
     }
+}
+
+/// Runs the control socket for as long as the app runs, and turns
+/// whatever arrives on it into a `Message`. `ipc.rs` never mentions
+/// `Message` or `Screen` — this is the one place that closes the loop, the
+/// same split `displays.rs`'s `signal_stream` makes for D-Bus signals.
+///
+/// If the socket dies (a bind error — in practice, only possible if the
+/// singleton lock in `main` somehow let two instances through at once),
+/// this retries after a few seconds rather than silently leaving the app
+/// with no way for a second invocation to ever reach it again.
+fn ipc_stream() -> impl iced::futures::Stream<Item = Message> {
+    iced::stream::channel(16, |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+        use iced::futures::SinkExt;
+
+        loop {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ipc::Signal>();
+            let server = tokio::spawn(ipc::run(tx));
+
+            while let Some(signal) = rx.recv().await {
+                let _ = output.send(Message::ExternalRequest(signal)).await;
+            }
+
+            match server.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "settings control socket stopped"),
+                Err(e) => tracing::warn!(error = %e, "settings control socket task panicked"),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+    })
 }
 
 #[cfg(test)]

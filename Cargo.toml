@@ -80,14 +80,29 @@ iced = { version = "0.14", default-features = false, features = [
 zbus = { version = "5.18", default-features = false, features = ["tokio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# "process" for the hyprctl calls that float/pin the revert prompt, on
-# top of the base rt-multi-thread/macros/sync/time this crate already
-# needs everywhere else.
-tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
+# "process" for the hyprctl calls that float/pin the revert prompt (and
+# focus the window on a second invocation's handoff); "net" and
+# "io-util" for the control socket in `ipc.rs`
+# (`UnixListener`/`UnixStream`, `BufReader`, `AsyncBufReadExt`/
+# `AsyncWriteExt`) — the same set `hyprforge-clipboard`'s control socket
+# needs, on top of the base rt-multi-thread/macros/sync/time this crate
+# already needs everywhere else.
+tokio = { version = "1.53", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "process",
+    "net",
+    "io-util",
+] }
 futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
+# The control socket's own error types (`ipc::IpcError`, `ipc::ClientError`)
+# — the same crate `hyprforge-clipboard`'s and `notif-ipc`'s equivalents use.
+thiserror = "2"
 
 [dev-dependencies]
 tempfile = "3"

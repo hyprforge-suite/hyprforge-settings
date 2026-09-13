@@ -117,10 +117,11 @@ pub enum Message {
     //
     // `Device::unsupported_reason` used to be the whole story for an
     // unpaired device: a string telling the user to run `bluetoothctl`.
-    // That string is now stale — pairing is wired up here — but it still
-    // lives in `hyprforge-bluetooth`, a crate this change must not touch,
-    // so it should be deleted there in a follow-up. This screen just
-    // stops calling it for that purpose; see `device_row`.
+    // Pairing is wired up here now, and that method has since been
+    // deleted from `hyprforge-bluetooth` — the follow-up this comment
+    // used to ask for is done. The `unsupported_reason` still in the
+    // tree belongs to `hyprforge-network` and is a different thing: a
+    // Wi-Fi security mode this suite genuinely cannot join.
     /// The device a Pair button was pressed for.
     PairPressed(Address),
     Paired(Address, Result<(), LoadError>),
@@ -307,10 +308,9 @@ impl<B: BluetoothBackend + 'static> SettingsModule for BluetoothModule<B> {
                 // message here still must not start a connection that can
                 // only fail. Same guard `network.rs` keeps for enterprise
                 // Wi-Fi. Checked as `!paired` directly rather than via
-                // `unsupported_reason()`: that method's *string* is
-                // stale now that pairing has a screen (see the comment
-                // in `device_row`), and this guard's correctness must
-                // not depend on text that's due to be deleted.
+                // `unsupported_reason()`, which no longer exists on
+                // `Device` at all — this guard never depended on text,
+                // which is why its deletion did not touch this line.
                 let Some(device) = self.devices.iter().find(|d| d.address == address) else {
                     return Task::none();
                 };
@@ -1319,8 +1319,8 @@ mod tests {
 
     // --- Pairing ------------------------------------------------------
 
-    /// The property `device_row` is now built around, replacing the
-    /// stale "use bluetoothctl" text: an unpaired device offers a way to
+    /// The property `device_row` is now built around, in place of the
+    /// "use bluetoothctl" text it replaced: an unpaired device offers a way to
     /// pair it, and pressing that button actually reaches the backend
     /// rather than being a no-op the way `ConnectPressed` still is for
     /// the same row.

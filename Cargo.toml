@@ -43,6 +43,7 @@ hyprforge-shortcuts = { git = "https://github.com/adamrpostjr/hyprforge" }
 hyprforge-lua-import = { git = "https://github.com/adamrpostjr/hyprforge" }
 hyprforge-network = { git = "https://github.com/adamrpostjr/hyprforge" }
 hyprforge-bluetooth = { git = "https://github.com/adamrpostjr/hyprforge" }
+hyprforge-power = { git = "https://github.com/adamrpostjr/hyprforge" }
 hyprforge-tray = { git = "https://github.com/adamrpostjr/hyprforge" }
 # iced_graphics enables the `image` crate with no format features at all,
 # so without this there is no PNG decoder and every wallpaper fails to
@@ -112,6 +113,12 @@ hyprforge-network = { git = "https://github.com/adamrpostjr/hyprforge", features
 # "mock" for `hyprforge_bluetooth::backend::mock::MockBackend`, which the
 # Bluetooth screen's tests drive instead of a real D-Bus connection.
 hyprforge-bluetooth = { git = "https://github.com/adamrpostjr/hyprforge", features = ["mock"] }
+# "mock" for `hyprforge_power::backend::mock`'s three mock backends, which
+# the Power screen's tests drive instead of real D-Bus connections — and,
+# for the power-profiles-daemon mock in particular, instead of ever
+# touching the real one (see CLAUDE.md: never change the active profile
+# of the machine this suite is developed on).
+hyprforge-power = { git = "https://github.com/adamrpostjr/hyprforge", features = ["mock"] }
 # `test-util` for `#[tokio::test(start_paused = true)]`: the displayd call
 # bounds are 5s and 25s, and a test suite must not spend half a minute
 # actually waiting them out to prove they fire.

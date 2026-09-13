@@ -18,6 +18,9 @@ use modules::system::SystemModule;
 use modules::displays::DisplaysModule;
 use modules::input::InputModule;
 use modules::network::{LazyNetworkManagerBackend, NetworkModule};
+use modules::power::{
+    LazyLogindBackend, LazyPowerProfilesDaemonBackend, LazyUPowerBackend, PowerModule,
+};
 use modules::shortcuts::ShortcutsModule;
 use modules::window_rules::WindowRulesModule;
 
@@ -42,6 +45,10 @@ fn screen_from_cli(name: &str) -> Option<(Screen, Option<modules::desktop::Tab>)
         "input" | "keyboard" => (Screen::Input, None),
         "network" | "wifi" | "wi-fi" => (Screen::Network, None),
         "bluetooth" | "bt" => (Screen::Bluetooth, None),
+        // This is the name the tray's keep-awake menu is meant to link
+        // to next — see the module doc comment on `modules::power` and
+        // the `--screen idle` stand-in it replaces.
+        "power" => (Screen::Power, None),
         "appearance" | "theme" => (Screen::Appearance, None),
         "desktop" => (Screen::Desktop, None),
         // These name a *tab*. A setting that lives on one is not
@@ -79,6 +86,7 @@ const SCREEN_NAMES: &[&str] = &[
     "input",
     "network",
     "bluetooth",
+    "power",
     "appearance",
     "desktop",
     "wallpaper",
@@ -388,6 +396,7 @@ enum Screen {
     Input,
     Network,
     Bluetooth,
+    Power,
     Appearance,
     Desktop,
     Session,
@@ -403,6 +412,7 @@ impl Screen {
             Screen::Input => "Input",
             Screen::Network => "Network",
             Screen::Bluetooth => "Bluetooth",
+            Screen::Power => "Power",
             Screen::Appearance => "Appearance",
             Screen::Desktop => "Desktop",
             Screen::Session => "Session",
@@ -444,6 +454,10 @@ const NAV: &[NavCategory] = &[
         screens: &[Screen::Bluetooth],
     },
     NavCategory {
+        label: "Power",
+        screens: &[Screen::Power],
+    },
+    NavCategory {
         label: "Appearance",
         screens: &[Screen::Appearance, Screen::Desktop],
     },
@@ -466,6 +480,7 @@ enum Message {
     Input(modules::input::Message),
     Network(modules::network::Message),
     Bluetooth(modules::bluetooth::Message),
+    Power(modules::power::Message),
     Appearance(modules::appearance::Message),
     Desktop(modules::desktop::Message),
     Session(modules::session::Message),
@@ -488,6 +503,7 @@ struct App {
     input: InputModule,
     network: NetworkModule<LazyNetworkManagerBackend>,
     bluetooth: BluetoothModule<LazyBlueZBackend>,
+    power: PowerModule<LazyLogindBackend, LazyUPowerBackend, LazyPowerProfilesDaemonBackend>,
     appearance: AppearanceModule,
     desktop: DesktopModule,
     session: SessionModule,
@@ -510,6 +526,11 @@ impl App {
             NetworkModule::new(std::sync::Arc::new(LazyNetworkManagerBackend::new()));
         let (bluetooth, bluetooth_task) =
             BluetoothModule::new(std::sync::Arc::new(LazyBlueZBackend::new()));
+        let (power, power_task) = PowerModule::new(
+            std::sync::Arc::new(LazyLogindBackend::new()),
+            std::sync::Arc::new(LazyUPowerBackend::new()),
+            std::sync::Arc::new(LazyPowerProfilesDaemonBackend::new()),
+        );
         let (appearance, appearance_task) = AppearanceModule::new();
         let (mut desktop, desktop_task) = DesktopModule::new();
         if let Some(tab) = INITIAL_DESKTOP_TAB.get() {
@@ -526,6 +547,7 @@ impl App {
                 input,
                 network,
                 bluetooth,
+                power,
                 appearance,
                 desktop,
                 session,
@@ -544,6 +566,7 @@ impl App {
                 input_task.map(Message::Input),
                 network_task.map(Message::Network),
                 bluetooth_task.map(Message::Bluetooth),
+                power_task.map(Message::Power),
                 appearance_task.map(Message::Appearance),
                 desktop_task.map(Message::Desktop),
                 session_task.map(Message::Session),
@@ -660,6 +683,9 @@ impl App {
                     .bluetooth
                     .update(modules::bluetooth::Message::Refresh)
                     .map(Message::Bluetooth),
+                Screen::Power => {
+                    self.power.update(modules::power::Message::Refresh).map(Message::Power)
+                }
                 Screen::Appearance => Task::none(),
                 Screen::Desktop => Task::none(),
                 Screen::Session => Task::none(),
@@ -672,6 +698,7 @@ impl App {
             Message::Input(msg) => self.input.update(msg).map(Message::Input),
             Message::Network(msg) => self.network.update(msg).map(Message::Network),
             Message::Bluetooth(msg) => self.bluetooth.update(msg).map(Message::Bluetooth),
+            Message::Power(msg) => self.power.update(msg).map(Message::Power),
             Message::Appearance(msg) => self.appearance.update(msg).map(Message::Appearance),
             Message::Desktop(msg) => self.desktop.update(msg).map(Message::Desktop),
             Message::Session(msg) => self.session.update(msg).map(Message::Session),
@@ -794,6 +821,7 @@ impl App {
             Screen::Input => self.input.icon(),
             Screen::Network => self.network.icon(),
             Screen::Bluetooth => self.bluetooth.icon(),
+            Screen::Power => self.power.icon(),
             Screen::Appearance => self.appearance.icon(),
             Screen::Desktop => self.desktop.icon(),
             Screen::Session => self.session.icon(),
@@ -872,6 +900,7 @@ impl App {
             Screen::Input => self.input.view(scale).map(Message::Input),
             Screen::Network => self.network.view(scale).map(Message::Network),
             Screen::Bluetooth => self.bluetooth.view(scale).map(Message::Bluetooth),
+            Screen::Power => self.power.view(scale).map(Message::Power),
             Screen::Appearance => self.appearance.view(scale).map(Message::Appearance),
             Screen::Desktop => self.desktop.view(scale).map(Message::Desktop),
             Screen::Session => self.session.view(scale).map(Message::Session),
@@ -926,6 +955,7 @@ impl App {
                 self.shortcuts.subscription().map(Message::Shortcuts),
                 self.network.subscription().map(Message::Network),
                 self.bluetooth.subscription().map(Message::Bluetooth),
+                self.power.subscription().map(Message::Power),
                 window::close_events().map(Message::WindowClosed),
                 Subscription::run(ipc_stream),
             ]);
@@ -956,6 +986,7 @@ impl App {
             self.shortcuts.subscription().map(Message::Shortcuts),
             self.network.subscription().map(Message::Network),
             self.bluetooth.subscription().map(Message::Bluetooth),
+            self.power.subscription().map(Message::Power),
             shortcuts,
             window::close_events().map(Message::WindowClosed),
             Subscription::run(ipc_stream),
@@ -1024,6 +1055,14 @@ mod cli_tests {
     #[test]
     fn naming_a_screen_rather_than_a_tab_does_not_choose_one() {
         assert_eq!(screen_from_cli("desktop"), Some((Screen::Desktop, None)));
+    }
+
+    /// `--screen power` is the name `hyprforge-trayd`'s keep-awake menu is
+    /// meant to link to next, replacing its `--screen idle` stand-in — see
+    /// the module doc comment on `modules::power`.
+    #[test]
+    fn screen_power_opens_the_power_screen() {
+        assert_eq!(screen_from_cli("power"), Some((Screen::Power, None)));
     }
 
     /// A name in the help text that the parser rejects is a promise the

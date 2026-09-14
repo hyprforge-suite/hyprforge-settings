@@ -83,6 +83,7 @@ pub enum Message {
     /// Fired once, when the drag ends. This is the one point that writes
     /// [`Prefs::menu_y_offset`] to disk.
     OffsetReleased,
+    ClickOutsideToggled(bool),
 }
 
 impl TrayModule {
@@ -160,6 +161,10 @@ impl SettingsModule for TrayModule {
                 self.write(|p| p.menu_y_offset = value);
                 Task::none()
             }
+            Message::ClickOutsideToggled(closes) => {
+                self.write(|p| p.menu_closes_on_click_outside = closes);
+                Task::none()
+            }
         }
     }
 
@@ -172,6 +177,7 @@ impl SettingsModule for TrayModule {
 
         content = content.push(self.icons_section(scale));
         content = content.push(self.offset_section(scale));
+        content = content.push(self.dismissal_section(scale));
 
         content.into()
     }
@@ -232,6 +238,40 @@ impl TrayModule {
             Err(_) => meta_text("Tray settings unavailable — see the error above.", 13.0, scale).into(),
         };
         section("Menu position", scale, body)
+    }
+
+    /// What a click outside an open tray menu does.
+    ///
+    /// Worth its own section rather than a line in "Menu position",
+    /// because it is not about where the menu is: it changes how the
+    /// popup asks the compositor for the keyboard, and that is what
+    /// decides whether the click that dismissed it also reaches whatever
+    /// it landed on. Turning it off is for driving the menus from the
+    /// keyboard, where a stray click closing the menu is a nuisance
+    /// rather than a convenience.
+    fn dismissal_section(&self, scale: FontScale) -> Element<'_, Message> {
+        let body: Element<'_, Message> = match &self.tray_prefs {
+            Ok(prefs) => column![
+                row![
+                    checkbox(prefs.menu_closes_on_click_outside).on_toggle(Message::ClickOutsideToggled),
+                    scaled_text("Close the menu when I click somewhere else", 15.0, scale),
+                ]
+                .spacing(spacing::SM)
+                .align_y(Alignment::Center),
+                meta_text(
+                    "On, the menu behaves like every other menu on the desktop: clicking \
+                     away dismisses it, and that click still reaches whatever you clicked \
+                     — including another tray icon. Off, the menu keeps the keyboard until \
+                     you choose a row or press Escape.",
+                    13.0,
+                    scale,
+                ),
+            ]
+            .spacing(spacing::SM)
+            .into(),
+            Err(_) => meta_text("Tray settings unavailable — see the error above.", 13.0, scale).into(),
+        };
+        section("Clicking away", scale, body)
     }
 }
 

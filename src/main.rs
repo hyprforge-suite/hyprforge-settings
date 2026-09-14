@@ -22,6 +22,7 @@ use modules::power::{
     LazyLogindBackend, LazyPowerProfilesDaemonBackend, LazyUPowerBackend, PowerModule,
 };
 use modules::shortcuts::ShortcutsModule;
+use modules::tray::TrayModule;
 use modules::window_rules::WindowRulesModule;
 
 /// Opens the app on one screen: `hyprforge-settings --screen network`.
@@ -49,6 +50,7 @@ fn screen_from_cli(name: &str) -> Option<(Screen, Option<modules::desktop::Tab>)
         // to next — see the module doc comment on `modules::power` and
         // the `--screen idle` stand-in it replaces.
         "power" => (Screen::Power, None),
+        "tray" => (Screen::Tray, None),
         "appearance" | "theme" => (Screen::Appearance, None),
         "desktop" => (Screen::Desktop, None),
         // These name a *tab*. A setting that lives on one is not
@@ -87,6 +89,7 @@ const SCREEN_NAMES: &[&str] = &[
     "network",
     "bluetooth",
     "power",
+    "tray",
     "appearance",
     "desktop",
     "wallpaper",
@@ -397,6 +400,7 @@ enum Screen {
     Network,
     Bluetooth,
     Power,
+    Tray,
     Appearance,
     Desktop,
     Session,
@@ -413,6 +417,7 @@ impl Screen {
             Screen::Network => "Network",
             Screen::Bluetooth => "Bluetooth",
             Screen::Power => "Power",
+            Screen::Tray => "Tray",
             Screen::Appearance => "Appearance",
             Screen::Desktop => "Desktop",
             Screen::Session => "Session",
@@ -458,6 +463,10 @@ const NAV: &[NavCategory] = &[
         screens: &[Screen::Power],
     },
     NavCategory {
+        label: "Tray",
+        screens: &[Screen::Tray],
+    },
+    NavCategory {
         label: "Appearance",
         screens: &[Screen::Appearance, Screen::Desktop],
     },
@@ -481,6 +490,7 @@ enum Message {
     Network(modules::network::Message),
     Bluetooth(modules::bluetooth::Message),
     Power(modules::power::Message),
+    Tray(modules::tray::Message),
     Appearance(modules::appearance::Message),
     Desktop(modules::desktop::Message),
     Session(modules::session::Message),
@@ -504,6 +514,7 @@ struct App {
     network: NetworkModule<LazyNetworkManagerBackend>,
     bluetooth: BluetoothModule<LazyBlueZBackend>,
     power: PowerModule<LazyLogindBackend, LazyUPowerBackend, LazyPowerProfilesDaemonBackend>,
+    tray: TrayModule,
     appearance: AppearanceModule,
     desktop: DesktopModule,
     session: SessionModule,
@@ -531,6 +542,7 @@ impl App {
             std::sync::Arc::new(LazyUPowerBackend::new()),
             std::sync::Arc::new(LazyPowerProfilesDaemonBackend::new()),
         );
+        let (tray, tray_task) = TrayModule::new();
         let (appearance, appearance_task) = AppearanceModule::new();
         let (mut desktop, desktop_task) = DesktopModule::new();
         if let Some(tab) = INITIAL_DESKTOP_TAB.get() {
@@ -548,6 +560,7 @@ impl App {
                 network,
                 bluetooth,
                 power,
+                tray,
                 appearance,
                 desktop,
                 session,
@@ -567,6 +580,7 @@ impl App {
                 network_task.map(Message::Network),
                 bluetooth_task.map(Message::Bluetooth),
                 power_task.map(Message::Power),
+                tray_task.map(Message::Tray),
                 appearance_task.map(Message::Appearance),
                 desktop_task.map(Message::Desktop),
                 session_task.map(Message::Session),
@@ -686,6 +700,9 @@ impl App {
                 Screen::Power => {
                     self.power.update(modules::power::Message::Refresh).map(Message::Power)
                 }
+                Screen::Tray => {
+                    self.tray.update(modules::tray::Message::Refresh).map(Message::Tray)
+                }
                 Screen::Appearance => Task::none(),
                 Screen::Desktop => Task::none(),
                 Screen::Session => Task::none(),
@@ -699,6 +716,7 @@ impl App {
             Message::Network(msg) => self.network.update(msg).map(Message::Network),
             Message::Bluetooth(msg) => self.bluetooth.update(msg).map(Message::Bluetooth),
             Message::Power(msg) => self.power.update(msg).map(Message::Power),
+            Message::Tray(msg) => self.tray.update(msg).map(Message::Tray),
             Message::Appearance(msg) => self.appearance.update(msg).map(Message::Appearance),
             Message::Desktop(msg) => self.desktop.update(msg).map(Message::Desktop),
             Message::Session(msg) => self.session.update(msg).map(Message::Session),
@@ -822,6 +840,7 @@ impl App {
             Screen::Network => self.network.icon(),
             Screen::Bluetooth => self.bluetooth.icon(),
             Screen::Power => self.power.icon(),
+            Screen::Tray => self.tray.icon(),
             Screen::Appearance => self.appearance.icon(),
             Screen::Desktop => self.desktop.icon(),
             Screen::Session => self.session.icon(),
@@ -901,6 +920,7 @@ impl App {
             Screen::Network => self.network.view(scale).map(Message::Network),
             Screen::Bluetooth => self.bluetooth.view(scale).map(Message::Bluetooth),
             Screen::Power => self.power.view(scale).map(Message::Power),
+            Screen::Tray => self.tray.view(scale).map(Message::Tray),
             Screen::Appearance => self.appearance.view(scale).map(Message::Appearance),
             Screen::Desktop => self.desktop.view(scale).map(Message::Desktop),
             Screen::Session => self.session.view(scale).map(Message::Session),
@@ -1063,6 +1083,17 @@ mod cli_tests {
     #[test]
     fn screen_power_opens_the_power_screen() {
         assert_eq!(screen_from_cli("power"), Some((Screen::Power, None)));
+    }
+
+    /// `--screen tray` is the Tray screen's own name — for hand deep-linking
+    /// and for `hyprforge-settings --screen tray` from a desktop entry.
+    /// Nothing currently sends this from `hyprforge-trayd`'s own menus
+    /// (each icon's settings row still goes to the screen carrying that
+    /// icon's own setting — Network, Bluetooth, or Power), so this is
+    /// reachable only by asking for the Tray screen by name.
+    #[test]
+    fn screen_tray_opens_the_tray_screen() {
+        assert_eq!(screen_from_cli("tray"), Some((Screen::Tray, None)));
     }
 
     /// A name in the help text that the parser rejects is a promise the

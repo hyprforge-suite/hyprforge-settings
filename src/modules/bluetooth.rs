@@ -400,16 +400,12 @@ impl<B: BluetoothBackend + 'static> SettingsModule for BluetoothModule<B> {
                 Task::none()
             }
             Message::TrayToggled(shown) => {
-                let Ok(prefs) = &self.tray_prefs else {
-                    // `tray_row` renders no checkbox while `tray_prefs` is
-                    // `Err`, so a stray message here still must not turn
-                    // an unreadable file into a freshly-written default.
-                    return Task::none();
-                };
-                let mut updated = *prefs;
-                updated.bluetooth = shown;
-                match hyprforge_tray::prefs::save(&updated) {
-                    Ok(()) => self.tray_prefs = Ok(updated),
+                // Read-modify-write — see `network::Message::TrayToggled`'s
+                // arm and `hyprforge_tray::prefs::update`'s own doc
+                // comment for why a save built from this screen's own
+                // (possibly stale) `tray_prefs` copy is not safe here.
+                match hyprforge_tray::prefs::update(|p| p.bluetooth = shown) {
+                    Ok(updated) => self.tray_prefs = Ok(updated),
                     Err(e) => self.error = Some(e.to_string()),
                 }
                 Task::none()

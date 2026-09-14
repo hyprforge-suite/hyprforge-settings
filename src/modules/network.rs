@@ -431,17 +431,19 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
                 Task::none()
             }
             Message::TrayToggled(shown) => {
-                let Ok(prefs) = &self.tray_prefs else {
-                    // `tray_row` renders no checkbox while `tray_prefs` is
-                    // `Err`, so a stray message here still must not turn
-                    // an unreadable file into a freshly-written default —
-                    // the exact overwrite this field exists to prevent.
-                    return Task::none();
-                };
-                let mut updated = *prefs;
-                updated.network = shown;
-                match hyprforge_tray::prefs::save(&updated) {
-                    Ok(()) => self.tray_prefs = Ok(updated),
+                // Read-modify-write, not save-what-`new`-loaded: the Tray
+                // screen (or Bluetooth, or a hand edit) may have changed
+                // `tray.toml` since this screen's own `tray_prefs` was
+                // last read, and a save built from this screen's stale
+                // copy would silently undo that write. `prefs::update`
+                // reloads immediately before applying just this one
+                // field, which is correct regardless of who wrote last —
+                // see its own doc comment. It also refuses and reports
+                // rather than overwriting if the file has gone unreadable
+                // since, the same rule `tray_prefs` already applies to a
+                // plain load.
+                match hyprforge_tray::prefs::update(|p| p.network = shown) {
+                    Ok(updated) => self.tray_prefs = Ok(updated),
                     Err(e) => self.error = Some(e.to_string()),
                 }
                 Task::none()

@@ -13,6 +13,7 @@ pub mod system;
 pub mod setting_rows;
 pub mod setup_notice;
 pub mod shortcuts;
+pub mod tray;
 pub mod window_rules;
 
 /// Evaluates the user's own `hyprland.lua` for importable entries.

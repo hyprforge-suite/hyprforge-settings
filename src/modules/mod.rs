@@ -1,6 +1,7 @@
 pub mod appearance;
 pub mod bluetooth;
 pub mod catalog_screen;
+pub mod default_apps;
 pub mod desktop;
 pub mod displays;
 pub mod input;

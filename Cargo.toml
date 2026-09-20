@@ -45,6 +45,10 @@ hyprforge-network = { git = "https://github.com/adamrpostjr/hyprforge" }
 hyprforge-bluetooth = { git = "https://github.com/adamrpostjr/hyprforge" }
 hyprforge-power = { git = "https://github.com/adamrpostjr/hyprforge" }
 hyprforge-tray = { git = "https://github.com/adamrpostjr/hyprforge" }
+# What opens what: the freedesktop mime database, read and (for the
+# user's own defaults) written. Same git spelling as every sibling
+# above — see the comment at the top of this section.
+hyprforge-mime = { git = "https://github.com/adamrpostjr/hyprforge" }
 # iced_graphics enables the `image` crate with no format features at all,
 # so without this there is no PNG decoder and every wallpaper fails to
 # load. Cargo unifies features across the dependency graph, so declaring

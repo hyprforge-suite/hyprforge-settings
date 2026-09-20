@@ -22,6 +22,7 @@ use modules::power::{
     LazyLogindBackend, LazyPowerProfilesDaemonBackend, LazyUPowerBackend, PowerModule,
 };
 use modules::shortcuts::ShortcutsModule;
+use modules::default_apps::DefaultAppsModule;
 use modules::tray::TrayModule;
 use modules::window_rules::WindowRulesModule;
 
@@ -62,6 +63,7 @@ fn screen_from_cli(name: &str) -> Option<(Screen, Option<modules::desktop::Tab>)
         "night-light" | "nightlight" => (Screen::Desktop, Some(Tab::NightLight)),
         "idle" | "keep-awake" => (Screen::Desktop, Some(Tab::Idle)),
         "screen-sharing" | "screensharing" => (Screen::Desktop, Some(Tab::ScreenSharing)),
+        "default-apps" | "defaults" | "applications" => (Screen::DefaultApps, None),
         "session" | "autostart" => (Screen::Session, None),
         "system" => (Screen::System, None),
         _ => return None,
@@ -92,6 +94,7 @@ const SCREEN_NAMES: &[&str] = &[
     "tray",
     "appearance",
     "desktop",
+    "default-apps",
     "wallpaper",
     "night-light",
     "idle",
@@ -403,6 +406,7 @@ enum Screen {
     Tray,
     Appearance,
     Desktop,
+    DefaultApps,
     Session,
     System,
 }
@@ -420,6 +424,7 @@ impl Screen {
             Screen::Tray => "Tray",
             Screen::Appearance => "Appearance",
             Screen::Desktop => "Desktop",
+            Screen::DefaultApps => "Default Applications",
             Screen::Session => "Session",
             Screen::System => "System",
         }
@@ -471,6 +476,10 @@ const NAV: &[NavCategory] = &[
         screens: &[Screen::Appearance, Screen::Desktop],
     },
     NavCategory {
+        label: "Applications",
+        screens: &[Screen::DefaultApps],
+    },
+    NavCategory {
         label: "Session",
         screens: &[Screen::Session, Screen::System],
     },
@@ -493,6 +502,7 @@ enum Message {
     Tray(modules::tray::Message),
     Appearance(modules::appearance::Message),
     Desktop(modules::desktop::Message),
+    DefaultApps(modules::default_apps::Message),
     Session(modules::session::Message),
     System(modules::catalog_screen::Message),
     WindowOpened(window::Id),
@@ -517,6 +527,7 @@ struct App {
     tray: TrayModule,
     appearance: AppearanceModule,
     desktop: DesktopModule,
+    default_apps: DefaultAppsModule,
     session: SessionModule,
     system: SystemModule,
     search_query: String,
@@ -548,6 +559,7 @@ impl App {
         if let Some(tab) = INITIAL_DESKTOP_TAB.get() {
             desktop.open_on(*tab);
         }
+        let (default_apps, default_apps_task) = DefaultAppsModule::new();
         let (session, session_task) = SessionModule::new();
         let (system, system_task) = SystemModule::new();
         (
@@ -563,6 +575,7 @@ impl App {
                 tray,
                 appearance,
                 desktop,
+                default_apps,
                 session,
                 system,
                 search_query: String::new(),
@@ -583,6 +596,7 @@ impl App {
                 tray_task.map(Message::Tray),
                 appearance_task.map(Message::Appearance),
                 desktop_task.map(Message::Desktop),
+                default_apps_task.map(Message::DefaultApps),
                 session_task.map(Message::Session),
                 system_task.map(Message::System),
             ]),
@@ -703,6 +717,12 @@ impl App {
                 Screen::Tray => {
                     self.tray.update(modules::tray::Message::Refresh).map(Message::Tray)
                 }
+                // An application may have been installed since this
+                // screen was last looked at.
+                Screen::DefaultApps => self
+                    .default_apps
+                    .update(modules::default_apps::Message::Refresh)
+                    .map(Message::DefaultApps),
                 Screen::Appearance => Task::none(),
                 Screen::Desktop => Task::none(),
                 Screen::Session => Task::none(),
@@ -717,6 +737,9 @@ impl App {
             Message::Bluetooth(msg) => self.bluetooth.update(msg).map(Message::Bluetooth),
             Message::Power(msg) => self.power.update(msg).map(Message::Power),
             Message::Tray(msg) => self.tray.update(msg).map(Message::Tray),
+            Message::DefaultApps(msg) => {
+                self.default_apps.update(msg).map(Message::DefaultApps)
+            }
             Message::Appearance(msg) => self.appearance.update(msg).map(Message::Appearance),
             Message::Desktop(msg) => self.desktop.update(msg).map(Message::Desktop),
             Message::Session(msg) => self.session.update(msg).map(Message::Session),
@@ -841,6 +864,7 @@ impl App {
             Screen::Bluetooth => self.bluetooth.icon(),
             Screen::Power => self.power.icon(),
             Screen::Tray => self.tray.icon(),
+            Screen::DefaultApps => self.default_apps.icon(),
             Screen::Appearance => self.appearance.icon(),
             Screen::Desktop => self.desktop.icon(),
             Screen::Session => self.session.icon(),
@@ -921,6 +945,7 @@ impl App {
             Screen::Bluetooth => self.bluetooth.view(scale).map(Message::Bluetooth),
             Screen::Power => self.power.view(scale).map(Message::Power),
             Screen::Tray => self.tray.view(scale).map(Message::Tray),
+            Screen::DefaultApps => self.default_apps.view(scale).map(Message::DefaultApps),
             Screen::Appearance => self.appearance.view(scale).map(Message::Appearance),
             Screen::Desktop => self.desktop.view(scale).map(Message::Desktop),
             Screen::Session => self.session.view(scale).map(Message::Session),

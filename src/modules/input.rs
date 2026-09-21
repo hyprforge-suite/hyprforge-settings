@@ -137,38 +137,13 @@ mod tests {
     use crate::module::SettingsModule;
     use hyprforge_input::catalog;
 
-    /// Runs `f` against a module whose config lives in a throwaway
-    /// directory. Without this, `InputModule::new()` reads — and several
-    /// update arms then *save over* — the developer's real
-    /// `~/.config/hyprforge/input.toml`.
+    /// A fresh InputModule against an isolated config home and greeter
+    /// export dir — see [`crate::modules::with_temp_env`].
     fn with_temp_config<T>(f: impl FnOnce(&mut InputModule) -> T) -> T {
-        let _lock = crate::modules::CONFIG_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let dir = tempfile::tempdir().unwrap();
-        let previous = std::env::var("XDG_CONFIG_HOME").ok();
-        // Both, not just the config home. A save reaches
-        // `look::republish`, which writes the greeter's exported theme
-        // to an absolute path that `XDG_CONFIG_HOME` does not redirect —
-        // so isolating only the config home still let a test overwrite
-        // the real login screen's appearance with a theme derived from
-        // this empty temp directory.
-        let previous_greet = std::env::var(hyprforge_look::theme::EXPORT_DIR_ENV).ok();
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", dir.path());
-            std::env::set_var(hyprforge_look::theme::EXPORT_DIR_ENV, dir.path().join("greet"));
-        }
-        let (mut module, _) = InputModule::new();
-        let out = f(&mut module);
-        match previous {
-            Some(p) => unsafe { std::env::set_var("XDG_CONFIG_HOME", p) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        match previous_greet {
-            Some(p) => unsafe { std::env::set_var(hyprforge_look::theme::EXPORT_DIR_ENV, p) },
-            None => unsafe { std::env::remove_var(hyprforge_look::theme::EXPORT_DIR_ENV) },
-        }
-        out
+        crate::modules::with_temp_env(|_dir| {
+            let (mut module, _) = InputModule::new();
+            f(&mut module)
+        })
     }
 
     #[test]

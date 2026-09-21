@@ -1080,25 +1080,10 @@ mod tests {
         (module, backend)
     }
 
-    /// Runs `f` with `$XDG_CONFIG_HOME` repointed at a throwaway
-    /// directory, holding `CONFIG_ENV_LOCK` for the duration — same
-    /// reasoning as `network::tests::with_temp_config`, whose sibling
-    /// this is: the variable is process-global, so the two must not race.
+    /// Isolated config home and greeter export dir — see
+    /// [`crate::modules::with_temp_env`].
     fn with_temp_config<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
-        let _lock = crate::modules::CONFIG_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let dir = tempfile::tempdir().unwrap();
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", dir.path());
-        }
-        let out = f(dir.path());
-        match previous {
-            Some(p) => unsafe { std::env::set_var("XDG_CONFIG_HOME", p) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        out
+        crate::modules::with_temp_env(f)
     }
 
     // --- tray preferences -------------------------------------------------

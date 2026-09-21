@@ -293,25 +293,10 @@ fn icon_row<'a>(
 mod tests {
     use super::*;
 
-    /// Runs `f` with `$XDG_CONFIG_HOME` repointed at a throwaway
-    /// directory — same helper `network.rs`'s tests define, duplicated
-    /// here rather than shared across a module boundary the same way
-    /// `network.rs` and `bluetooth.rs` each keep their own copy.
+    /// Isolated config home and greeter export dir — see
+    /// [`crate::modules::with_temp_env`].
     fn with_temp_config<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
-        let _lock = crate::modules::CONFIG_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let dir = tempfile::tempdir().unwrap();
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", dir.path());
-        }
-        let out = f(dir.path());
-        match previous {
-            Some(p) => unsafe { std::env::set_var("XDG_CONFIG_HOME", p) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        out
+        crate::modules::with_temp_env(f)
     }
 
     #[test]

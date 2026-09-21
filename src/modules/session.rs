@@ -918,34 +918,13 @@ mod gesture_reading {
 mod tests {
     use super::*;
 
+    /// A fresh SessionModule against an isolated config home and greeter
+    /// export dir — see [`crate::modules::with_temp_env`].
     fn with_temp_config<T>(f: impl FnOnce(&mut SessionModule) -> T) -> T {
-        let _lock = crate::modules::CONFIG_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let dir = tempfile::tempdir().unwrap();
-        let previous = std::env::var("XDG_CONFIG_HOME").ok();
-        // Both, not just the config home. A save reaches
-        // `look::republish`, which writes the greeter's exported theme
-        // to an absolute path that `XDG_CONFIG_HOME` does not redirect —
-        // so isolating only the config home still let a test overwrite
-        // the real login screen's appearance with a theme derived from
-        // this empty temp directory.
-        let previous_greet = std::env::var(hyprforge_look::theme::EXPORT_DIR_ENV).ok();
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", dir.path());
-            std::env::set_var(hyprforge_look::theme::EXPORT_DIR_ENV, dir.path().join("greet"));
-        }
-        let (mut module, _) = SessionModule::new();
-        let out = f(&mut module);
-        match previous {
-            Some(p) => unsafe { std::env::set_var("XDG_CONFIG_HOME", p) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        match previous_greet {
-            Some(p) => unsafe { std::env::set_var(hyprforge_look::theme::EXPORT_DIR_ENV, p) },
-            None => unsafe { std::env::remove_var(hyprforge_look::theme::EXPORT_DIR_ENV) },
-        }
-        out
+        crate::modules::with_temp_env(|_dir| {
+            let (mut module, _) = SessionModule::new();
+            f(&mut module)
+        })
     }
 
     fn call(kind: &str, body: serde_json::Value, file: &str) -> hyprforge_lua_import::RecordedCall {

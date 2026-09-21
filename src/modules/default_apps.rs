@@ -19,6 +19,17 @@
 //! at a time by whatever installed them — so the row says when they do,
 //! rather than picking one to show and quietly hiding the rest.
 //!
+//! # Kinds answer the common question; the rest of the database is
+//! still there
+//!
+//! Eleven rows cannot cover forty thousand types, and the moment
+//! somebody wants the twelfth thing they are back to editing
+//! `mimeapps.list` in a text editor. So below the kinds is the whole
+//! database, searchable — and, with an empty search box, the list of
+//! every choice already recorded, which is the one thing no desktop
+//! shows anywhere. That list is where a default pointing at an
+//! application uninstalled two years ago finally becomes visible.
+//!
 //! # What this screen may write
 //!
 //! `mimeapps.list`, one line per type, through `hyprforge_mime`. Nothing
@@ -28,9 +39,11 @@
 use crate::module::SettingsModule;
 use crate::modules::setting_rows::labelled;
 use hyprforge_ui::theme::{self, spacing, FontScale};
-use hyprforge_ui::widgets::{meta_text, scaled_text, section};
-use iced::widget::{column, pick_list};
+use hyprforge_ui::widgets::{meta_text, scaled_text, secondary_button, section};
+use iced::widget::{column, pick_list, row, text_input};
 use iced::{Element, Length, Task};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::sync::Arc;
 
 /// One row: a name a person would use, and the types it stands for.
@@ -101,13 +114,79 @@ const KINDS: &[Kind] = &[
     Kind { label: "3D models", types: &["model/stl", "model/3mf", "model/obj"] },
 ];
 
+/// How many types a search puts on screen at once.
+///
+/// `view` runs every frame and a row is a `pick_list`, so an
+/// unbounded search is not a slow screen — it is one that never draws.
+/// Forty is already more than fits on a monitor, so the cap is only
+/// reached by a search too broad to be looking for anything in
+/// particular, and the count of what was left out is shown rather than
+/// the list silently ending.
+const SHOWN: usize = 40;
+
+/// One read of the machine: the database, and which defaults are in the
+/// file this screen is allowed to edit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scan {
+    db: hyprforge_mime::MimeDb,
+    yours: BTreeSet<String>,
+}
+
 /// Reads the database off the UI thread.
 fn load() -> Task<Message> {
     Task::perform(
         async {
-            tokio::task::spawn_blocking(hyprforge_mime::MimeDb::load).await.unwrap_or_default()
+            tokio::task::spawn_blocking(|| Scan {
+                db: hyprforge_mime::MimeDb::load(),
+                yours: yours_in(&hyprforge_mime::user_mimeapps_path()),
+            })
+            .await
+            .unwrap_or_default()
         },
         Message::Loaded,
+    )
+}
+
+/// The types one `mimeapps.list` records a default for.
+///
+/// Read separately from the database, which merges every file that
+/// applies, because *which file a line came from* decides whether this
+/// screen can offer to remove it. A default set system-wide is not
+/// ours to clear, and a Clear button that silently did nothing would
+/// be worse than no button. A file that is not there is a machine
+/// where nothing has been chosen yet — an answer, not a failure.
+fn yours_in(path: &Path) -> BTreeSet<String> {
+    let Ok(text) = std::fs::read_to_string(path) else { return BTreeSet::new() };
+    hyprforge_mime::defaults::parse(&text).into_keys().collect()
+}
+
+/// Reads the descriptions for the rows now on screen.
+///
+/// Off the UI thread, and only for what is visible: a description is
+/// one small XML file per type, and the database has tens of thousands
+/// of them. A row shows its type name until its description arrives,
+/// which is why this can be late without being wrong.
+fn describe(db: Arc<hyprforge_mime::MimeDb>, mimes: Vec<String>) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let dirs = hyprforge_mime::data_dirs();
+                mimes
+                    .iter()
+                    .filter_map(|mime| {
+                        let text = hyprforge_mime::types::description_of(
+                            &dirs,
+                            db.canonical(mime),
+                            None,
+                        )?;
+                        Some((mime.clone(), text))
+                    })
+                    .collect()
+            })
+            .await
+            .unwrap_or_default()
+        },
+        Message::Described,
     )
 }
 
@@ -156,6 +235,37 @@ pub struct DefaultAppsModule {
     /// shared-mime-info — a confident wrong answer where "reading" is
     /// the true one.
     loaded: bool,
+    /// What is in the search box. Empty means "show me what I have
+    /// chosen", which is a question rather than a blank screen.
+    search: String,
+    /// The rows the search is showing, at most [`SHOWN`] of them,
+    /// rebuilt when the search or the database changes and never in
+    /// `view`.
+    matches: Vec<TypeRow>,
+    /// How many types the search actually matched, so the screen can
+    /// say what it left out.
+    matched: usize,
+    /// Descriptions for types that have been asked about, accumulating
+    /// as searches go by. Kept across searches: going back to a
+    /// previous search should not re-read the same files.
+    descriptions: BTreeMap<String, String>,
+    /// The types whose default is in the file this screen writes — the
+    /// ones it can offer to clear. See [`yours_in`].
+    yours: BTreeSet<String>,
+}
+
+/// One searched type's row: what to call it, what it can be opened
+/// with, and what opens it now.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct TypeRow {
+    mime: String,
+    /// The description if one has been read, else the type name. Owned
+    /// rather than worked out in `view`, which runs every frame.
+    label: String,
+    choices: Vec<Choice>,
+    current: Option<Choice>,
+    /// Whether this screen can clear it — see [`yours_in`].
+    clearable: bool,
 }
 
 /// What one kind's row shows: the applications to offer, the one
@@ -173,9 +283,17 @@ pub enum Message {
     /// application may have been installed since it was last read.
     Refresh,
     /// The database, as just read off the UI thread.
-    Loaded(hyprforge_mime::MimeDb),
+    Loaded(Scan),
     /// A kind's application was chosen, by index into [`KINDS`].
     Chosen(usize, Choice),
+    /// What was typed in the search box.
+    Searched(String),
+    /// An application was chosen for one type, by name.
+    TypeChosen(String, Choice),
+    /// One type's recorded default was removed.
+    TypeCleared(String),
+    /// Descriptions for the rows on screen, as just read.
+    Described(BTreeMap<String, String>),
 }
 
 impl DefaultAppsModule {
@@ -190,14 +308,21 @@ impl DefaultAppsModule {
                 rows: Vec::new(),
                 error: None,
                 loaded: false,
+                search: String::new(),
+                matches: Vec::new(),
+                matched: 0,
+                descriptions: BTreeMap::new(),
+                yours: BTreeSet::new(),
             },
             load(),
         )
     }
 
-    /// Takes a freshly-read database and prepares what the view draws.
-    fn adopt(&mut self, db: hyprforge_mime::MimeDb) {
-        self.db = Arc::new(db);
+    /// Takes a freshly-read database and prepares what the view draws,
+    /// handing back the types whose descriptions are now worth reading.
+    fn adopt(&mut self, scan: Scan) -> Vec<String> {
+        self.db = Arc::new(scan.db);
+        self.yours = scan.yours;
         self.loaded = true;
         self.rows = KINDS
             .iter()
@@ -207,6 +332,75 @@ impl DefaultAppsModule {
                 disagreements: self.disagreements(kind),
             })
             .collect();
+        self.rebuild_matches()
+    }
+
+    /// Works out which types the search is showing, and prepares a row
+    /// for each. Returns their names, for [`describe`].
+    ///
+    /// Matching is on the type's own name (`image/png`), not its
+    /// description: a description has to be read from disk before it
+    /// can be searched, and reading forty thousand files to answer one
+    /// keystroke is not a search box. Descriptions arrive afterwards
+    /// and change what a row is *called*, never which rows there are —
+    /// so what the box matches stays the same whether or not the reads
+    /// have landed.
+    fn rebuild_matches(&mut self) -> Vec<String> {
+        let query = self.search.trim().to_lowercase();
+        let (matched, shown) = {
+            let matching: Vec<&str> = match query.is_empty() {
+                // An empty box is not an empty screen. It is every
+                // choice already recorded — the list this desktop has
+                // nowhere else, and where a default pointing at
+                // something uninstalled is finally visible.
+                true => self.db.chosen_types(),
+                false => self
+                    .db
+                    .known_types()
+                    .into_iter()
+                    .filter(|mime| mime.contains(&query))
+                    .collect(),
+            };
+            let shown: Vec<String> =
+                matching.iter().take(SHOWN).map(|mime| (*mime).to_string()).collect();
+            (matching.len(), shown)
+        };
+        self.matched = matched;
+        let rows: Vec<TypeRow> = shown.iter().map(|mime| self.type_row(mime)).collect();
+        self.matches = rows;
+        shown
+    }
+
+    /// One type's row.
+    ///
+    /// Offered applications come from `candidates`, which includes the
+    /// ones registered for a type this one is a *kind of* — a text
+    /// editor for a shell script, an archive manager for a 3MF. A
+    /// person searching for one specific type is usually there because
+    /// nothing registered for it directly, so a list of only the direct
+    /// registrations would be empty exactly when it was needed.
+    fn type_row(&self, mime: &str) -> TypeRow {
+        let mut choices: Vec<Choice> = Vec::new();
+        for candidate in self.db.candidates(mime) {
+            if !choices.iter().any(|c| c.id == candidate.app.id) {
+                choices.push(Choice {
+                    id: candidate.app.id.clone(),
+                    name: candidate.app.name.clone(),
+                    installed: candidate.app.installed,
+                });
+            }
+        }
+        TypeRow {
+            label: self.descriptions.get(mime).cloned().unwrap_or_else(|| mime.to_string()),
+            current: self.db.default_for(mime).map(|app| Choice {
+                id: app.id.clone(),
+                name: app.name.clone(),
+                installed: app.installed,
+            }),
+            clearable: self.yours.contains(mime),
+            mime: mime.to_string(),
+            choices,
+        }
     }
 
     /// The applications offered for a kind: everything registered for
@@ -266,9 +460,47 @@ impl SettingsModule for DefaultAppsModule {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Refresh => load(),
-            Message::Loaded(db) => {
-                self.adopt(db);
+            Message::Loaded(scan) => {
+                let shown = self.adopt(scan);
+                describe(self.db.clone(), shown)
+            }
+            Message::Described(found) => {
+                self.descriptions.extend(found);
+                // Relabel the rows already on screen rather than
+                // rebuilding them: nothing about *which* types matched
+                // has changed, only what each one is called, and a
+                // rebuild would throw away a pick_list mid-click.
+                for row in &mut self.matches {
+                    if let Some(text) = self.descriptions.get(&row.mime) {
+                        row.label.clone_from(text);
+                    }
+                }
                 Task::none()
+            }
+            Message::Searched(query) => {
+                self.search = query;
+                let shown = self.rebuild_matches();
+                describe(self.db.clone(), shown)
+            }
+            Message::TypeChosen(mime, choice) => {
+                // One type, unlike a kind: somebody who searched for
+                // `text/x-python` asked about that type and nothing
+                // else. The kinds above exist precisely so that the
+                // broad answer does not have to be assembled here.
+                self.error = self
+                    .db
+                    .set_default(&mime, &choice.id)
+                    .err()
+                    .map(|e| format!("Couldn't save that choice: {e}"));
+                load()
+            }
+            Message::TypeCleared(mime) => {
+                self.error = self
+                    .db
+                    .clear_default(&mime)
+                    .err()
+                    .map(|e| format!("Couldn't clear that: {e}"));
+                load()
             }
             Message::Chosen(index, choice) => {
                 let Some(kind) = KINDS.get(index) else { return Task::none() };
@@ -340,13 +572,90 @@ impl SettingsModule for DefaultAppsModule {
         }
 
         content = content.push(section("What opens what", scale, rows));
+        content = content.push(section("Every file type", scale, self.search_view(scale)));
         content = content.push(meta_text(
-            "Changing one of these writes your own mimeapps.list, which every application \
+            "Changing any of these writes your own mimeapps.list, which every application \
              on the desktop reads — not just Hyprforge's.",
             12.0,
             scale,
         ));
         content.into()
+    }
+}
+
+impl DefaultAppsModule {
+    /// The search box and the rows it found.
+    fn search_view(&self, scale: FontScale) -> Element<'_, Message> {
+        let mut found = column![text_input("Search all file types\u{2026}", &self.search)
+            .on_input(Message::Searched)
+            .padding(spacing::SM)]
+        .spacing(spacing::MD);
+
+        for prepared in &self.matches {
+            let control: Element<'_, Message> = if prepared.choices.is_empty() {
+                meta_text("Nothing installed opens this", 13.0, scale).into()
+            } else {
+                let mime = prepared.mime.clone();
+                pick_list(prepared.choices.clone(), prepared.current.clone(), move |choice| {
+                    Message::TypeChosen(mime.clone(), choice)
+                })
+                .width(Length::Fill)
+                .text_size(scale.apply(13.0))
+                .into()
+            };
+            let mut line = row![labelled(&prepared.label, control, scale)]
+                .spacing(spacing::MD)
+                .align_y(iced::Alignment::Center);
+            if prepared.clearable {
+                // Only for a line in the file this screen writes: see
+                // `yours_in`. Clearing is how somebody puts a type back
+                // to "whatever registered for it", which choosing a
+                // different application cannot express.
+                line = line.push(
+                    secondary_button("Clear")
+                        .on_press(Message::TypeCleared(prepared.mime.clone())),
+                );
+            }
+            // The type's own name under its description, because the
+            // description is what a person recognises and the name is
+            // what every other tool on the machine will call it.
+            let mut cell = column![line].spacing(spacing::XS);
+            if prepared.label != prepared.mime {
+                cell = cell.push(meta_text(prepared.mime.clone(), 12.0, scale));
+            }
+            found = found.push(cell);
+        }
+
+        if self.matches.is_empty() {
+            let empty = match self.search.trim().is_empty() {
+                // Not "no results": nothing has been chosen, which is
+                // what a machine looks like before anyone changes
+                // anything, and is worth saying in those words.
+                true => "You haven't chosen an application for any file type yet — everything \
+                         opens with whatever registered for it. Search above to set one."
+                    .to_string(),
+                false => format!("Nothing matches \u{201c}{}\u{201d}.", self.search.trim()),
+            };
+            found = found.push(meta_text(empty, 13.0, scale));
+        } else if self.matched > self.matches.len() {
+            found = found.push(meta_text(
+                format!(
+                    "Showing {} of {} matching types. Type more to narrow it down.",
+                    self.matches.len(),
+                    self.matched
+                ),
+                12.0,
+                scale,
+            ));
+        } else if self.search.trim().is_empty() {
+            found = found.push(meta_text(
+                "These are the choices recorded in your own mimeapps.list. Search to set \
+                 one for any other type.",
+                12.0,
+                scale,
+            ));
+        }
+        found.into()
     }
 }
 
@@ -397,7 +706,13 @@ mod tests {
         )
         .unwrap();
         let mut module = DefaultAppsModule::default_for_test();
-        module.adopt(hyprforge_mime::MimeDb::load_from(&[data], &[mimeapps]));
+        // Through `yours_in`, so the fixture exercises the same
+        // "which file was this line in" question the real screen asks.
+        let scan = Scan {
+            db: hyprforge_mime::MimeDb::load_from(&[data], std::slice::from_ref(&mimeapps)),
+            yours: yours_in(&mimeapps),
+        };
+        module.adopt(scan);
         (dir, module)
     }
 
@@ -410,8 +725,142 @@ mod tests {
                 rows: Vec::new(),
                 error: None,
                 loaded: false,
+                search: String::new(),
+                matches: Vec::new(),
+                matched: 0,
+                descriptions: BTreeMap::new(),
+                yours: BTreeSet::new(),
             }
         }
+    }
+
+    /// A module over a database built from `globs2` and `mimeapps`
+    /// contents, with one installed application registered for
+    /// everything named in the cache.
+    fn module_over(globs2: &str, cache: &str, mimeapps: &[&str]) -> (tempfile::TempDir, DefaultAppsModule) {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(data.join("mime")).unwrap();
+        std::fs::create_dir_all(data.join("applications")).unwrap();
+        std::fs::write(data.join("mime/globs2"), globs2).unwrap();
+        std::fs::write(
+            data.join("applications/viewer.desktop"),
+            "[Desktop Entry]\nName=Picture Viewer\nExec=sh %f\n",
+        )
+        .unwrap();
+        std::fs::write(data.join("applications/mimeinfo.cache"), cache).unwrap();
+        let paths: Vec<PathBuf> = mimeapps
+            .iter()
+            .enumerate()
+            .map(|(index, text)| {
+                let path = dir.path().join(format!("mimeapps-{index}.list"));
+                std::fs::write(&path, text).unwrap();
+                path
+            })
+            .collect();
+        let mut module = DefaultAppsModule::default_for_test();
+        // The first is "yours" — the one file the screen may write.
+        let yours = paths.first().map(|p| yours_in(p)).unwrap_or_default();
+        module.adopt(Scan { db: hyprforge_mime::MimeDb::load_from(&[data], &paths), yours });
+        (dir, module)
+    }
+
+    /// The question the kinds above cannot answer: what have I actually
+    /// chosen? An empty search box is that list, not a blank screen.
+    #[test]
+    fn an_empty_search_shows_the_choices_already_made() {
+        let (_dir, module) = module_with_fixture();
+        let shown: Vec<&str> = module.matches.iter().map(|r| r.mime.as_str()).collect();
+        assert_eq!(shown, vec!["image/jpeg", "image/png", "model/stl"]);
+        assert!(
+            module.matches.iter().all(|r| r.clearable),
+            "every one is in the file this screen writes"
+        );
+        let stl = module.matches.iter().find(|r| r.mime == "model/stl").unwrap();
+        assert_eq!(
+            stl.current.as_ref().map(|c| c.installed),
+            Some(false),
+            "and a default that has been uninstalled is visible here, which is the point"
+        );
+    }
+
+    /// A type nobody registered for is still findable — that is the
+    /// whole reason the search exists beside the eleven kinds.
+    #[test]
+    fn a_search_finds_types_by_name() {
+        let (_dir, mut module) = module_with_fixture();
+        module.search = "image".to_string();
+        module.rebuild_matches();
+        let shown: Vec<&str> = module.matches.iter().map(|r| r.mime.as_str()).collect();
+        assert_eq!(shown, vec!["image/jpeg", "image/png"]);
+
+        module.search = "  MODEL ".to_string();
+        module.rebuild_matches();
+        let shown: Vec<&str> = module.matches.iter().map(|r| r.mime.as_str()).collect();
+        assert_eq!(shown, vec!["model/stl"], "trimmed and case-folded, as typing is");
+
+        module.search = "nothing-like-this".to_string();
+        module.rebuild_matches();
+        assert!(module.matches.is_empty());
+        assert_eq!(module.matched, 0);
+    }
+
+    /// Clearing edits one file, so only a line in *that* file may be
+    /// offered a Clear. A button that silently did nothing would be
+    /// worse than no button.
+    #[test]
+    fn a_default_set_system_wide_is_shown_but_not_offered_a_clear() {
+        let (_dir, module) = module_over(
+            "50:image/png:*.png\n50:image/gif:*.gif\n",
+            "[MIME Cache]\nimage/png=viewer.desktop;\nimage/gif=viewer.desktop;\n",
+            &[
+                "[Default Applications]\nimage/png=viewer.desktop\n",
+                "[Default Applications]\nimage/gif=viewer.desktop\n",
+            ],
+        );
+        let row = |mime: &str| module.matches.iter().find(|r| r.mime == mime).cloned().unwrap();
+        assert!(row("image/png").clearable, "this one is in the user's own file");
+        assert!(
+            row("image/gif").current.is_some(),
+            "the system-wide choice is still shown, because it is still in effect"
+        );
+        assert!(!row("image/gif").clearable, "but this screen cannot remove it");
+    }
+
+    /// `view` runs every frame and a row is a `pick_list`. A search
+    /// that matched the whole database would not be a slow screen, it
+    /// would be one that never draws — so the rows are capped and the
+    /// count of what was left out is kept, to be said out loud.
+    #[test]
+    fn a_broad_search_is_capped_and_says_so() {
+        let globs2: String = (0..SHOWN * 3).map(|n| format!("50:test/t{n}:*.t{n}\n")).collect();
+        let (_dir, mut module) = module_over(&globs2, "[MIME Cache]\n", &[]);
+        module.search = "test/".to_string();
+        module.rebuild_matches();
+        assert_eq!(module.matches.len(), SHOWN);
+        assert_eq!(module.matched, SHOWN * 3, "and it knows how many it did not draw");
+    }
+
+    /// A description is a file read, so it arrives after the row does.
+    /// Until then the row is called by its type name — never blank, and
+    /// never a row that appears once the reading finishes.
+    #[test]
+    fn a_row_is_called_by_its_type_until_its_description_arrives() {
+        let (_dir, mut module) = module_with_fixture();
+        let before: Vec<&str> = module.matches.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(before, vec!["image/jpeg", "image/png", "model/stl"]);
+
+        let described = BTreeMap::from([("image/png".to_string(), "PNG image".to_string())]);
+        // The task it hands back reads nothing: the descriptions have
+        // already arrived, which is what this message is.
+        let _ = module.update(Message::Described(described));
+        let after: Vec<&str> = module.matches.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(after, vec!["image/jpeg", "PNG image", "model/stl"]);
+        assert_eq!(
+            module.matches.len(),
+            3,
+            "a description changes what a row is called, never which rows there are"
+        );
     }
 
     fn kind(label: &str) -> &'static Kind {
@@ -509,7 +958,10 @@ mod tests {
         assert!(!module.loaded, "nothing read yet");
 
         let mut read = DefaultAppsModule::default_for_test();
-        read.adopt(hyprforge_mime::MimeDb::load_from(&[PathBuf::from("/nonexistent-xyz")], &[]));
+        read.adopt(Scan {
+            db: hyprforge_mime::MimeDb::load_from(&[PathBuf::from("/nonexistent-xyz")], &[]),
+            yours: BTreeSet::new(),
+        });
         assert!(read.loaded, "read, and there was nothing there");
         assert!(!read.db.knows_types());
     }
@@ -518,7 +970,7 @@ mod tests {
     fn no_database_is_a_state_of_its_own() {
         let db = hyprforge_mime::MimeDb::load_from(&[PathBuf::from("/nonexistent-xyz")], &[]);
         let mut module = DefaultAppsModule::default_for_test();
-        module.adopt(db);
+        module.adopt(Scan { db, yours: BTreeSet::new() });
         assert!(!module.db.knows_types());
     }
 }

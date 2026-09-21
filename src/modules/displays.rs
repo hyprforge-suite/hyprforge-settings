@@ -113,6 +113,29 @@ impl HeadDetail {
     }
 }
 
+/// What to write on a monitor's tile in the arrangement canvas.
+///
+/// Its name, plus the connector when that name is not unique. Two
+/// identical monitors report identical EDIDs — a pair of AOC 2475Ws on
+/// one desk both read "AOC 2475W" — so the canvas showed two tiles with
+/// the same words on them, and getting them into the right order "took
+/// some finagling". The connector (`DP-12`, `HDMI-A-1`) is the one
+/// thing that differs, and it names the socket the cable goes into.
+///
+/// Only when ambiguous: a desk with a laptop screen and one monitor
+/// gains nothing from `DP-4` on every tile, and the tiles are small.
+fn canvas_label(head: &HeadDetail, all: &[HeadDetail]) -> String {
+    let name = head.display_name();
+    let shared = all
+        .iter()
+        .filter(|other| other.connector_hint != head.connector_hint)
+        .any(|other| other.display_name() == name);
+    match shared {
+        true => format!("{name} ({})", head.connector_hint),
+        false => name,
+    }
+}
+
 /// One entry in a monitor picker. Carries the `connector_hint` as the
 /// identity (that's what every message and D-Bus call is keyed on) while
 /// showing the friendly name.
@@ -416,6 +439,18 @@ struct LayoutEditor {
     swap_b: Option<String>,
     status: Option<String>,
     error: Option<String>,
+    /// Edits made here that the compositor has not been told about.
+    ///
+    /// The page used to apply every edit as it happened, debounced by
+    /// 700ms. That reads well in a design document — GNOME's HIG asks
+    /// instant-apply pages to have no dismissal button, and the
+    /// daemon's revert countdown is a real safety net — and it is
+    /// wrong in use: arranging three monitors means dragging one,
+    /// looking at it, dragging it again, and the screen rearranging
+    /// itself under you between each of those is disorienting enough
+    /// that the user asked for it to stop. Nothing is applied now until
+    /// this is true and Save & Apply is pressed.
+    unapplied: bool,
 }
 
 impl LayoutEditor {
@@ -436,6 +471,7 @@ impl LayoutEditor {
             field_transform,
             swap_a: None,
             swap_b: None,
+            unapplied: false,
             status: None,
             error: None,
         }
@@ -515,9 +551,12 @@ pub enum Message {
     SwapToggled(Result<ProfileDetail, String>),
     SetPolicy(String),
     PolicySet(Result<ProfileDetail, String>),
-    /// Fires after edits stop. `u64` is the generation it was scheduled
-    /// for; a stale one is ignored (see `apply_generation`).
-    ApplySettled(u64),
+    /// Save & Apply: hand the edited layout to the daemon. The only
+    /// thing that changes what is on screen — see
+    /// [`LayoutEditor::unapplied`].
+    ApplyEditor,
+    /// Throw the edits away and reload what is on disk.
+    DiscardEdits,
     LayoutSaved(Result<(), String>),
     ResolutionSelected(ResolutionOption),
     RefreshSelected(RefreshOption),
@@ -567,11 +606,6 @@ pub struct DisplaysModule {
     /// standing condition, not news, so it sits collapsed at the bottom
     /// rather than shouting above the controls every visit.
     show_warnings: bool,
-    /// Bumped on every edit. The debounced apply carries the generation it
-    /// was scheduled under and does nothing if a newer edit has landed
-    /// since — so a drag that emits a message per frame applies once, on
-    /// settle, instead of fighting itself.
-    apply_generation: u64,
     last_event: Option<String>,
     /// Managing every stored profile (not just the one loaded in the
     /// editor) is the power-user case — collapsed by default.
@@ -798,7 +832,6 @@ impl DisplaysModule {
                 revert_seconds_left: None,
                 show_advanced: false,
                 show_warnings: false,
-                apply_generation: 0,
                 last_event: None,
                 show_other_profiles: false,
                 editor: None,
@@ -817,27 +850,50 @@ impl DisplaysModule {
         self.revert_seconds_left
     }
 
-    /// Schedules an apply for shortly after edits stop.
+    /// Records that the layout on screen is no longer what the
+    /// compositor is running.
     ///
-    /// Settings apply on change rather than behind a Save button: GNOME's
-    /// HIG calls for instant-apply pages to have no dismissal button at
-    /// all, and Windows' display panel applies immediately and then offers
-    /// a timed "keep these settings?" — which is exactly the revert window
-    /// the daemon already provides. A Save button on top of that would be a
-    /// second, weaker safety net.
-    ///
-    /// The debounce exists because edits arrive in bursts: a canvas drag
-    /// emits a message per frame, and a text field one per keystroke.
-    /// Applying each would thrash the compositor.
-    fn schedule_apply(&mut self) -> Task<Message> {
-        self.apply_generation = self.apply_generation.wrapping_add(1);
-        let generation = self.apply_generation;
+    /// This used to schedule an apply 700ms after edits stopped — see
+    /// [`LayoutEditor::unapplied`] for why it does not any more. It
+    /// returns a `Task` so the call sites read unchanged; there is
+    /// nothing to do but remember.
+    fn mark_unapplied(&mut self) -> Task<Message> {
+        if let Some(editor) = &mut self.editor {
+            editor.unapplied = true;
+            // A stale "applied" line under an edited layout says the
+            // opposite of what is true.
+            editor.status = None;
+        }
+        Task::none()
+    }
+
+    /// Hands the editor's layout to the daemon — Save & Apply, and the
+    /// only thing that changes what is on screen.
+    fn apply_editor(&mut self) -> Task<Message> {
+        let Some(editor) = &self.editor else {
+            return Task::none();
+        };
+        let heads: Vec<HeadGeometry> = editor
+            .profile
+            .heads
+            .iter()
+            .map(|h| {
+                (
+                    h.connector_hint.clone(),
+                    h.x,
+                    h.y,
+                    h.width,
+                    h.height,
+                    h.refresh_mhz,
+                    h.scale,
+                    h.transform.clone(),
+                )
+            })
+            .collect();
+        let is_current = self.current_profile_id.as_ref() == Some(&editor.profile.id);
         Task::perform(
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-                generation
-            },
-            Message::ApplySettled,
+            save_geometry(editor.profile.id.clone(), heads, is_current),
+            Message::LayoutSaved,
         )
     }
 
@@ -1325,7 +1381,7 @@ impl SettingsModule for DisplaysModule {
                     editor.field_transform = label;
                     commit_selected_head(editor);
                 }
-                self.schedule_apply()
+                self.mark_unapplied()
             }
             Message::HeadDragMoved(connector_hint, x, y) => {
                 if let Some(editor) = &mut self.editor {
@@ -1345,49 +1401,49 @@ impl SettingsModule for DisplaysModule {
                 }
                 // Fires per frame while dragging; the debounce collapses the
                 // whole gesture into one apply when the pointer settles.
-                self.schedule_apply()
+                self.mark_unapplied()
             }
             Message::FieldX(v) => {
                 if let Some(editor) = &mut self.editor {
                     editor.field_x = v;
                     commit_selected_head(editor);
                 }
-                self.schedule_apply()
+                self.mark_unapplied()
             }
             Message::FieldY(v) => {
                 if let Some(editor) = &mut self.editor {
                     editor.field_y = v;
                     commit_selected_head(editor);
                 }
-                self.schedule_apply()
+                self.mark_unapplied()
             }
             Message::FieldWidth(v) => {
                 if let Some(editor) = &mut self.editor {
                     editor.field_width = v;
                     commit_selected_head(editor);
                 }
-                self.schedule_apply()
+                self.mark_unapplied()
             }
             Message::FieldHeight(v) => {
                 if let Some(editor) = &mut self.editor {
                     editor.field_height = v;
                     commit_selected_head(editor);
                 }
-                self.schedule_apply()
+                self.mark_unapplied()
             }
             Message::FieldRefresh(v) => {
                 if let Some(editor) = &mut self.editor {
                     editor.field_refresh = v;
                     commit_selected_head(editor);
                 }
-                self.schedule_apply()
+                self.mark_unapplied()
             }
             Message::FieldScale(v) => {
                 if let Some(editor) = &mut self.editor {
                     editor.field_scale = v;
                     commit_selected_head(editor);
                 }
-                self.schedule_apply()
+                self.mark_unapplied()
             }
             Message::SwapSelectA(hint) => {
                 if let Some(editor) = &mut self.editor {
@@ -1450,37 +1506,14 @@ impl SettingsModule for DisplaysModule {
                 }
                 Task::none()
             }
-            Message::ApplySettled(generation) => {
-                // Ignore a timer from an edit that's already been
-                // superseded — only the last one in a burst applies.
-                if generation != self.apply_generation {
-                    return Task::none();
+            Message::ApplyEditor => self.apply_editor(),
+            Message::DiscardEdits => {
+                // Back to what is on disk, which is what the compositor
+                // is running — reloading is the whole undo.
+                match self.editor.as_ref().map(|e| e.profile.id.clone()) {
+                    Some(id) => Task::perform(load_profile(id), Message::LayoutLoaded),
+                    None => Task::none(),
                 }
-                let Some(editor) = &self.editor else {
-                    return Task::none();
-                };
-                let heads: Vec<HeadGeometry> = editor
-                    .profile
-                    .heads
-                    .iter()
-                    .map(|h| {
-                        (
-                            h.connector_hint.clone(),
-                            h.x,
-                            h.y,
-                            h.width,
-                            h.height,
-                            h.refresh_mhz,
-                            h.scale,
-                            h.transform.clone(),
-                        )
-                    })
-                    .collect();
-                let is_current = self.current_profile_id.as_ref() == Some(&editor.profile.id);
-                Task::perform(
-                    save_geometry(editor.profile.id.clone(), heads, is_current),
-                    Message::LayoutSaved,
-                )
             }
             Message::ResolutionSelected(res) => {
                 if let Some(editor) = &mut self.editor {
@@ -1521,14 +1554,14 @@ impl SettingsModule for DisplaysModule {
                     }
                     commit_selected_head(editor);
                 }
-                self.schedule_apply()
+                self.mark_unapplied()
             }
             Message::RefreshSelected(rate) => {
                 if let Some(editor) = &mut self.editor {
                     editor.field_refresh = format!("{:.3}", rate.mhz as f64 / 1000.0);
                     commit_selected_head(editor);
                 }
-                self.schedule_apply()
+                self.mark_unapplied()
             }
             Message::ToggleWarnings => {
                 self.show_warnings = !self.show_warnings;
@@ -1618,8 +1651,10 @@ impl SettingsModule for DisplaysModule {
             }
             Message::LayoutSaved(Ok(())) => {
                 if let Some(editor) = &mut self.editor {
-                    editor.status = Some("Saved.".to_string());
+                    editor.status = Some("Saved and applied.".to_string());
                     editor.error = None;
+                    // What is on screen is now what is in the editor.
+                    editor.unapplied = false;
                 }
                 Task::perform(load(), Message::Loaded)
             }
@@ -1863,6 +1898,33 @@ impl DisplaysModule {
             body = body.push(notice);
         }
 
+        // Above the canvas, not below it: this is the answer to "why is
+        // nothing happening", and an explanation that needs scrolling to
+        // is not one.
+        if editor.unapplied {
+            body = body.push(section(
+                "Not applied yet",
+                scale,
+                column![
+                    meta_text(
+                        "These changes are not on screen yet. Applying starts a countdown \
+                         that puts the old layout back if you do not confirm — so a setting \
+                         that blanks a monitor cannot strand you.",
+                        BASE_TEXT_SIZE,
+                        scale,
+                    ),
+                    row![
+                        secondary_button("Discard changes").on_press(Message::DiscardEdits),
+                        iced::widget::Space::new().width(Length::Fill),
+                        primary_button("Save & Apply").on_press(Message::ApplyEditor),
+                    ]
+                    .spacing(spacing::SM)
+                    .align_y(iced::Alignment::Center),
+                ]
+                .spacing(spacing::MD),
+            ));
+        }
+
         let canvas_heads: Vec<CanvasHead> = editor
             .profile
             .heads
@@ -1872,7 +1934,7 @@ impl DisplaysModule {
                 let (width, height) = h.logical_size();
                 CanvasHead {
                     connector_hint: h.connector_hint.clone(),
-                    label: h.display_name(),
+                    label: canvas_label(h, &editor.profile.heads),
                     x: h.x,
                     y: h.y,
                     width,
@@ -2213,12 +2275,19 @@ impl DisplaysModule {
             body = body.push(scaled_text(format!("Error: {err}"), 13.0, scale));
         }
 
-        // No Save/Discard bar: changes apply as you make them, and the
-        // daemon's confirm/revert banner is the undo. GNOME's HIG is
-        // explicit that instant-apply pages carry no dismissal button, and
-        // Windows' display panel behaves the same way — apply, then offer a
-        // timed revert. Two competing safety mechanisms would be worse than
-        // one good one.
+        // The Save & Apply bar is at the top of this body rather than
+        // here, and only when there is something unapplied — see
+        // `LayoutEditor::unapplied`.
+        //
+        // This page used to apply as you edited, on the GNOME HIG's
+        // reasoning that an instant-apply page needs no dismissal
+        // button, with the daemon's timed revert as the undo. The
+        // argument is sound and the result was not: arranging three
+        // monitors is drag, look, drag again, and having the screen
+        // rearrange itself between those is disorienting. The revert
+        // countdown stays — it is what makes applying safe — but it is
+        // a net for the apply you *asked* for, not a substitute for
+        // asking.
         body.into()
     }
 }
@@ -2706,6 +2775,40 @@ mod tests {
         h.make = make.to_string();
         h.model = model.to_string();
         h
+    }
+
+    /// Two monitors that report the same EDID are told apart by their
+    /// connector — the one thing that differs, and the one printed on
+    /// the socket the cable goes into.
+    #[test]
+    fn identical_monitors_are_told_apart_on_the_canvas() {
+        let heads = vec![
+            head("DP-11", "AOC", "2475W"),
+            head("DP-12", "AOC", "2475W"),
+            head("HDMI-A-1", "DELL", "U2720Q"),
+        ];
+        assert_eq!(canvas_label(&heads[0], &heads), "AOC 2475W (DP-11)");
+        assert_eq!(canvas_label(&heads[1], &heads), "AOC 2475W (DP-12)");
+        assert_eq!(
+            canvas_label(&heads[2], &heads),
+            "DELL U2720Q",
+            "a name nothing shares is left alone — the tiles are small"
+        );
+    }
+
+    /// One monitor is never ambiguous with itself.
+    #[test]
+    fn a_single_monitor_keeps_its_plain_name() {
+        let heads = vec![head("DP-4", "DELL", "U2720Q")];
+        assert_eq!(canvas_label(&heads[0], &heads), "DELL U2720Q");
+    }
+
+    /// Two built-in panels would both be "Built-in display" — rare, but
+    /// the rule is about the name being shared, not about EDIDs.
+    #[test]
+    fn two_built_in_panels_are_told_apart_too() {
+        let heads = vec![head("eDP-1", "BOE", "0x0BC9"), head("eDP-2", "AUO", "0x1234")];
+        assert_eq!(canvas_label(&heads[0], &heads), "Built-in display (eDP-1)");
     }
 
     #[test]

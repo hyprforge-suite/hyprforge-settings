@@ -850,6 +850,21 @@ impl DisplaysModule {
         self.revert_seconds_left
     }
 
+    /// Applies one edit to the selected head, then records that the
+    /// layout on screen is no longer what the compositor is running.
+    ///
+    /// Six text fields and two dropdowns each did these three steps in
+    /// their own arm: write the field, `commit_selected_head`, mark.
+    /// Either of the last two is silently omissible, and omitting the
+    /// mark means an edit that never offers Save & Apply.
+    fn edit(&mut self, change: impl FnOnce(&mut LayoutEditor)) -> Task<Message> {
+        if let Some(editor) = &mut self.editor {
+            change(editor);
+            commit_selected_head(editor);
+        }
+        self.mark_unapplied()
+    }
+
     /// Records that the layout on screen is no longer what the
     /// compositor is running.
     ///
@@ -1399,52 +1414,17 @@ impl SettingsModule for DisplaysModule {
                         editor.field_y = y.to_string();
                     }
                 }
-                // Fires per frame while dragging; the debounce collapses the
-                // whole gesture into one apply when the pointer settles.
+                // Fires per frame while dragging, and none of them
+                // applies anything — the whole gesture is one edit, and
+                // Save & Apply is what puts it on screen.
                 self.mark_unapplied()
             }
-            Message::FieldX(v) => {
-                if let Some(editor) = &mut self.editor {
-                    editor.field_x = v;
-                    commit_selected_head(editor);
-                }
-                self.mark_unapplied()
-            }
-            Message::FieldY(v) => {
-                if let Some(editor) = &mut self.editor {
-                    editor.field_y = v;
-                    commit_selected_head(editor);
-                }
-                self.mark_unapplied()
-            }
-            Message::FieldWidth(v) => {
-                if let Some(editor) = &mut self.editor {
-                    editor.field_width = v;
-                    commit_selected_head(editor);
-                }
-                self.mark_unapplied()
-            }
-            Message::FieldHeight(v) => {
-                if let Some(editor) = &mut self.editor {
-                    editor.field_height = v;
-                    commit_selected_head(editor);
-                }
-                self.mark_unapplied()
-            }
-            Message::FieldRefresh(v) => {
-                if let Some(editor) = &mut self.editor {
-                    editor.field_refresh = v;
-                    commit_selected_head(editor);
-                }
-                self.mark_unapplied()
-            }
-            Message::FieldScale(v) => {
-                if let Some(editor) = &mut self.editor {
-                    editor.field_scale = v;
-                    commit_selected_head(editor);
-                }
-                self.mark_unapplied()
-            }
+            Message::FieldX(v) => self.edit(|editor| editor.field_x = v),
+            Message::FieldY(v) => self.edit(|editor| editor.field_y = v),
+            Message::FieldWidth(v) => self.edit(|editor| editor.field_width = v),
+            Message::FieldHeight(v) => self.edit(|editor| editor.field_height = v),
+            Message::FieldRefresh(v) => self.edit(|editor| editor.field_refresh = v),
+            Message::FieldScale(v) => self.edit(|editor| editor.field_scale = v),
             Message::SwapSelectA(hint) => {
                 if let Some(editor) = &mut self.editor {
                     editor.swap_a = Some(hint);

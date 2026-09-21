@@ -26,9 +26,10 @@
 //! entries and does not touch the shared MIME database.
 
 use crate::module::SettingsModule;
+use crate::modules::setting_rows::labelled;
 use hyprforge_ui::theme::{self, spacing, FontScale};
 use hyprforge_ui::widgets::{meta_text, scaled_text, section};
-use iced::widget::{column, container, pick_list, row};
+use iced::widget::{column, pick_list};
 use iced::{Element, Length, Task};
 use std::sync::Arc;
 
@@ -100,6 +101,16 @@ const KINDS: &[Kind] = &[
     Kind { label: "3D models", types: &["model/stl", "model/3mf", "model/obj"] },
 ];
 
+/// Reads the database off the UI thread.
+fn load() -> Task<Message> {
+    Task::perform(
+        async {
+            tokio::task::spawn_blocking(hyprforge_mime::MimeDb::load).await.unwrap_or_default()
+        },
+        Message::Loaded,
+    )
+}
+
 /// One entry in a row's list. `Display` is what the list shows, so it
 /// carries the "not installed" note rather than the view repeating it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,8 +138,33 @@ pub struct DefaultAppsModule {
     /// screen shows what it just did rather than what it found at
     /// startup.
     db: Arc<hyprforge_mime::MimeDb>,
+    /// One prepared row per kind, rebuilt whenever `db` changes.
+    ///
+    /// `view` runs every frame, and it used to ask the database for all
+    /// of this on each one: an `apps_for` per type across thirty types,
+    /// a `String` cloned per application, and a sort whose key was a
+    /// freshly lowercased name per comparison. None of it changes
+    /// between a `Refresh` and a `Chosen`.
+    rows: Vec<KindRow>,
     /// What the last save said, if anything went wrong.
     error: Option<String>,
+    /// Whether the database has been read yet.
+    ///
+    /// Distinct from "there is no database": for the moment between
+    /// opening the screen and the read returning, an empty database
+    /// would otherwise be reported as a machine with no
+    /// shared-mime-info — a confident wrong answer where "reading" is
+    /// the true one.
+    loaded: bool,
+}
+
+/// What one kind's row shows: the applications to offer, the one
+/// currently set, and any types inside the kind that disagree with it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct KindRow {
+    choices: Vec<Choice>,
+    current: Option<Choice>,
+    disagreements: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -136,13 +172,41 @@ pub enum Message {
     /// Re-read the database — on entering the screen, since an
     /// application may have been installed since it was last read.
     Refresh,
+    /// The database, as just read off the UI thread.
+    Loaded(hyprforge_mime::MimeDb),
     /// A kind's application was chosen, by index into [`KINDS`].
     Chosen(usize, Choice),
 }
 
 impl DefaultAppsModule {
+    /// The database is read off the UI thread, like every other
+    /// backend on this screen's siblings: it scans every `.desktop` on
+    /// the machine and walks `PATH` for each one, and `new` runs for
+    /// every Settings launch whether or not anyone opens this screen.
     pub fn new() -> (Self, Task<Message>) {
-        (DefaultAppsModule { db: Arc::new(hyprforge_mime::MimeDb::load()), error: None }, Task::none())
+        (
+            DefaultAppsModule {
+                db: Arc::new(hyprforge_mime::MimeDb::default()),
+                rows: Vec::new(),
+                error: None,
+                loaded: false,
+            },
+            load(),
+        )
+    }
+
+    /// Takes a freshly-read database and prepares what the view draws.
+    fn adopt(&mut self, db: hyprforge_mime::MimeDb) {
+        self.db = Arc::new(db);
+        self.loaded = true;
+        self.rows = KINDS
+            .iter()
+            .map(|kind| KindRow {
+                choices: self.choices(kind),
+                current: self.current(kind),
+                disagreements: self.disagreements(kind),
+            })
+            .collect();
     }
 
     /// The applications offered for a kind: everything registered for
@@ -201,21 +265,23 @@ impl SettingsModule for DefaultAppsModule {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Refresh => {
-                self.db = Arc::new(hyprforge_mime::MimeDb::load());
+            Message::Refresh => load(),
+            Message::Loaded(db) => {
+                self.adopt(db);
                 Task::none()
             }
             Message::Chosen(index, choice) => {
                 let Some(kind) = KINDS.get(index) else { return Task::none() };
                 // Every type in the kind, so choosing an image viewer
-                // does not fix PNGs and leave JPEGs behind.
+                // does not fix PNGs and leave JPEGs behind. Through the
+                // database, so an alias is resolved to the name the
+                // read side will look for.
                 self.error = kind
                     .types
                     .iter()
-                    .find_map(|mime| hyprforge_mime::set_default(mime, &choice.id).err())
+                    .find_map(|mime| self.db.set_default(mime, &choice.id).err())
                     .map(|e| format!("Couldn't save that choice: {e}"));
-                self.db = Arc::new(hyprforge_mime::MimeDb::load());
-                Task::none()
+                load()
             }
         }
     }
@@ -226,6 +292,15 @@ impl SettingsModule for DefaultAppsModule {
 
         if let Some(error) = &self.error {
             content = content.push(scaled_text(error.clone(), 13.0, scale).color(theme::warning()));
+        }
+
+        if !self.loaded {
+            content = content.push(section(
+                "Reading",
+                scale,
+                meta_text("Looking at what this machine can open\u{2026}", 13.0, scale),
+            ));
+            return content.into();
         }
 
         if !self.db.knows_types() {
@@ -244,21 +319,21 @@ impl SettingsModule for DefaultAppsModule {
         }
 
         let mut rows = column![].spacing(spacing::MD);
-        for (index, kind) in KINDS.iter().enumerate() {
-            let choices = self.choices(kind);
+        for ((index, kind), prepared) in KINDS.iter().enumerate().zip(&self.rows) {
+            let choices = prepared.choices.clone();
             let control: Element<'_, Message> = if choices.is_empty() {
                 // Not an empty list to click on: a kind with nothing
                 // installed is a statement, and an empty dropdown is a
                 // puzzle.
                 meta_text("Nothing installed opens these", 13.0, scale).into()
             } else {
-                pick_list(choices, self.current(kind), move |choice| Message::Chosen(index, choice))
+                pick_list(choices, prepared.current.clone(), move |choice| Message::Chosen(index, choice))
                     .width(Length::Fill)
                     .text_size(scale.apply(13.0))
                     .into()
             };
             let mut cell = column![labelled(kind.label, control, scale)].spacing(spacing::XS);
-            for note in self.disagreements(kind) {
+            for note in prepared.disagreements.clone() {
                 cell = cell.push(meta_text(note, 12.0, scale));
             }
             rows = rows.push(cell);
@@ -275,15 +350,6 @@ impl SettingsModule for DefaultAppsModule {
     }
 }
 
-fn labelled<'a>(label: &'a str, control: Element<'a, Message>, scale: FontScale) -> Element<'a, Message> {
-    row![
-        container(scaled_text(label, 13.0, scale)).width(Length::FillPortion(2)),
-        container(control).width(Length::FillPortion(3)),
-    ]
-    .spacing(spacing::MD)
-    .align_y(iced::Alignment::Center)
-    .into()
-}
 
 #[cfg(test)]
 mod tests {
@@ -330,8 +396,22 @@ mod tests {
              model/stl=gone.desktop\n",
         )
         .unwrap();
-        let db = hyprforge_mime::MimeDb::load_from(&[data], &[mimeapps]);
-        (dir, DefaultAppsModule { db: Arc::new(db), error: None })
+        let mut module = DefaultAppsModule::default_for_test();
+        module.adopt(hyprforge_mime::MimeDb::load_from(&[data], &[mimeapps]));
+        (dir, module)
+    }
+
+    impl DefaultAppsModule {
+        /// An empty module for a test to `adopt` a fixture database
+        /// into — the same path `new` + `Message::Loaded` take.
+        fn default_for_test() -> DefaultAppsModule {
+            DefaultAppsModule {
+                db: Arc::new(hyprforge_mime::MimeDb::default()),
+                rows: Vec::new(),
+                error: None,
+                loaded: false,
+            }
+        }
     }
 
     fn kind(label: &str) -> &'static Kind {
@@ -421,10 +501,24 @@ mod tests {
 
     /// The machine with no database at all is a state with a sentence,
     /// not a screen of empty rows.
+    /// "Not read yet" and "there is no database" are different states,
+    /// and only the second is a machine without shared-mime-info.
+    #[test]
+    fn reading_is_told_apart_from_having_nothing_to_read() {
+        let module = DefaultAppsModule::default_for_test();
+        assert!(!module.loaded, "nothing read yet");
+
+        let mut read = DefaultAppsModule::default_for_test();
+        read.adopt(hyprforge_mime::MimeDb::load_from(&[PathBuf::from("/nonexistent-xyz")], &[]));
+        assert!(read.loaded, "read, and there was nothing there");
+        assert!(!read.db.knows_types());
+    }
+
     #[test]
     fn no_database_is_a_state_of_its_own() {
         let db = hyprforge_mime::MimeDb::load_from(&[PathBuf::from("/nonexistent-xyz")], &[]);
-        let module = DefaultAppsModule { db: Arc::new(db), error: None };
+        let mut module = DefaultAppsModule::default_for_test();
+        module.adopt(db);
         assert!(!module.db.knows_types());
     }
 }

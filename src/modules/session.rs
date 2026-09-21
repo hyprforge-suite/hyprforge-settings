@@ -20,6 +20,7 @@ use hyprforge_ui::widgets::{
 };
 use crate::modules::setup_notice::setup_notice;
 use crate::module::SettingsModule;
+use crate::modules::setting_rows::labelled;
 use hyprforge_session::storage::Session;
 use hyprforge_session::{autostart, environment, gestures, permissions};
 use hyprforge_session::setup::{HyprConfig, SetupPlan};
@@ -811,19 +812,6 @@ fn row_actions<'a>(
     .into()
 }
 
-fn labelled<'a>(
-    label: &'a str,
-    control: Element<'a, Message>,
-    scale: FontScale,
-) -> Element<'a, Message> {
-    row![
-        container(scaled_text(label, 13.0, scale)).width(Length::FillPortion(2)),
-        container(control).width(Length::FillPortion(3)),
-    ]
-    .spacing(spacing::MD)
-    .align_y(iced::Alignment::Center)
-    .into()
-}
 
 /// Recovers a gesture from a recorded `hl.gesture({...})` call.
 /// `None` when this isn't a gesture call at all; `Some(Err)` when it is

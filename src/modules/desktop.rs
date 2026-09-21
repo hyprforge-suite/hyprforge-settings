@@ -18,6 +18,7 @@ use hyprforge_ui::widgets::{
     danger_button, divider, meta_text, primary_button, scaled_text, secondary_button, section,
 };
 use crate::module::SettingsModule;
+use crate::modules::setting_rows::labelled;
 use hyprforge_ecosystem::apply::{self, Applied};
 use hyprforge_ecosystem::{idle, import, portal, sunset, wallpaper};
 use iced::widget::{checkbox, column, container, pick_list, row, scrollable, text_input};
@@ -1709,19 +1710,6 @@ impl DesktopModule {
 /// dropdown entry would read as "not set" rather than "all of them".
 const ALL_MONITORS: &str = "All screens";
 
-fn labelled<'a>(
-    label: &'a str,
-    control: Element<'a, Message>,
-    scale: FontScale,
-) -> Element<'a, Message> {
-    row![
-        container(scaled_text(label, 13.0, scale)).width(Length::FillPortion(2)),
-        container(control).width(Length::FillPortion(3)),
-    ]
-    .spacing(spacing::MD)
-    .align_y(iced::Alignment::Center)
-    .into()
-}
 
 /// Keeps a stored value that discovery didn't find — an image on another
 /// disk, a folder that moved. Dropping it would show nothing selected,

@@ -235,6 +235,33 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
     }
 }
 
+/// A settings row: a label on the left, a control on the right, in the
+/// 2:3 split every screen in this app uses.
+///
+/// Generic over the message type because each module has its own. It
+/// lives here because it was written out four times — `desktop.rs`,
+/// `session.rs`, `default_apps.rs` and the variant above — identically
+/// each time, so a change to the split, the spacing or the label size
+/// meant four edits to keep the screens looking like one app. That is
+/// the drift CLAUDE.md names when two screens grew their own palettes.
+///
+/// `hyprforge_ui::widgets::row_field` is deliberately not used: it
+/// takes plain `text` rather than `scaled_text` and caps the control's
+/// width, so it renders differently.
+pub fn labelled<'a, M: 'a>(
+    label: &'a str,
+    control: Element<'a, M>,
+    scale: FontScale,
+) -> Element<'a, M> {
+    row![
+        container(scaled_text(label, 13.0, scale)).width(Length::FillPortion(2)),
+        container(control).width(Length::FillPortion(3)),
+    ]
+    .spacing(spacing::MD)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
 /// The options a picker should offer, with `current` kept even when it
 /// isn't among them.
 ///

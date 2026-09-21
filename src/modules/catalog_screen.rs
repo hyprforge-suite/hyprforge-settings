@@ -38,6 +38,67 @@ use iced::widget::{checkbox, column, container, row, scrollable, text_input};
 use iced::{Element, Length, Task};
 use std::collections::BTreeMap;
 
+/// Parses every pending draft into `settings`, reporting which ones
+/// could not be parsed.
+///
+/// All-or-nothing per field: a field that does not parse keeps its
+/// draft and its error, and the ones that do parse are still applied,
+/// so one typo does not discard everything else that was typed.
+///
+/// A free function over the pieces rather than a method, because the
+/// Appearance screen does exactly this over a `Settings` that lives
+/// inside its own store rather than directly on the screen — it had a
+/// line-for-line copy of it, differing only in where the settings were
+/// reached and how the catalogue was named.
+///
+/// Returns whether anything was applied, which is what tells a caller
+/// whether there is something to save.
+pub(crate) fn apply_drafts(
+    settings: &mut Settings,
+    catalog: &'static Catalog,
+    drafts: &mut BTreeMap<&'static str, String>,
+    draft_errors: &mut BTreeMap<&'static str, String>,
+) -> bool {
+    draft_errors.clear();
+    let pending: Vec<(&'static str, String)> = drafts.iter().map(|(k, v)| (*k, v.clone())).collect();
+    let mut applied = false;
+    for (key, raw) in pending {
+        let Some(setting) = catalog.get(key) else {
+            continue;
+        };
+        match setting_rows::parse_for(&setting.kind, &raw) {
+            Ok(value) => {
+                let problems = Settings::from_one(key, value.clone()).validate(catalog);
+                if let Some(problem) = problems.first() {
+                    draft_errors.insert(key, problem.problem.clone());
+                } else {
+                    settings.set(key, value);
+                    drafts.remove(key);
+                    applied = true;
+                }
+            }
+            Err(problem) => {
+                draft_errors.insert(key, problem);
+            }
+        }
+    }
+    applied
+}
+
+/// Whether a setting should be shown for the text in the filter box, so
+/// a screen with fifty-odd options is still navigable.
+///
+/// Matches the label, the key and the help text: someone looking for
+/// "natural scroll" and someone looking for `kb_options` both find what
+/// they mean.
+pub(crate) fn matches_filter(filter: &str, setting: &Setting) -> bool {
+    let q = filter.trim().to_lowercase();
+    q.is_empty()
+        || setting.label.to_lowercase().contains(&q)
+        || setting.key.to_lowercase().contains(&q)
+        || setting.help.to_lowercase().contains(&q)
+}
+
 /// Everything a catalogue-backed screen needs that isn't the screen.
 pub trait Catalogued: 'static {
     const ICON: &'static str;
@@ -285,48 +346,22 @@ impl<M: Catalogued> CatalogScreen<M> {
     /// ones that do parse are still applied, so one typo doesn't discard
     /// everything else the user typed.
     fn apply_drafts(&mut self) -> Task<Message> {
-        self.draft_errors.clear();
-        let pending: Vec<(&'static str, String)> =
-            self.drafts.iter().map(|(k, v)| (*k, v.clone())).collect();
-        let mut applied = false;
-        for (key, raw) in pending {
-            let Some(setting) = M::catalog().get(key) else {
-                continue;
-            };
-            match setting_rows::parse_for(&setting.kind, &raw) {
-                Ok(value) => {
-                    let problems = Settings::from_one(key, value.clone()).validate(M::catalog());
-                    if let Some(problem) = problems.first() {
-                        self.draft_errors.insert(key, problem.problem.clone());
-                    } else {
-                        self.settings.set(key, value);
-                        self.drafts.remove(key);
-                        applied = true;
-                    }
-                }
-                Err(problem) => {
-                    self.draft_errors.insert(key, problem);
-                }
-            }
+        let applied = apply_drafts(
+            &mut self.settings,
+            M::catalog(),
+            &mut self.drafts,
+            &mut self.draft_errors,
+        );
+        match applied {
+            true => self.save_and_maybe_reload(),
+            false => Task::none(),
         }
-        if !applied {
-            return Task::none();
-        }
-        self.save_and_maybe_reload()
     }
 
-    /// Rows matching the filter box, so a screen with fifty-odd options is
-    /// still navigable. Matches the label, the key and the help text: a
-    /// user looking for "natural scroll" and one looking for
-    /// `kb_options` both find what they mean.
+    /// Whether a setting is shown, for the text currently in the filter
+    /// box — see [`matches_filter`].
     pub(crate) fn matches_filter(&self, setting: &Setting) -> bool {
-        let q = self.filter.trim().to_lowercase();
-        if q.is_empty() {
-            return true;
-        }
-        setting.label.to_lowercase().contains(&q)
-            || setting.key.to_lowercase().contains(&q)
-            || setting.help.to_lowercase().contains(&q)
+        matches_filter(&self.filter, setting)
     }
 }
 

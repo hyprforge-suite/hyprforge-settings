@@ -20,12 +20,12 @@
 //!   and the previous value is offered back as the only undo there is.
 
 use hyprforge_appearance::animations::{Animation, Curve, LiveAnimation};
-use hyprforge_appearance::catalog::{self, CATALOG};
+use hyprforge_appearance::catalog::CATALOG;
 use hyprforge_appearance::desktop::{self, Catalogue, DesktopKind, DesktopSetting};
 use hyprforge_appearance::setup::{HyprConfig, SetupPlan};
 use hyprforge_appearance::storage::Appearance;
 use hyprforge_core::hlconfig::import::{Discovered, Live};
-use hyprforge_core::hlconfig::{Invalid, Setting, Settings, Value};
+use hyprforge_core::hlconfig::{Invalid, Setting, Value};
 use hyprforge_core::lua_setup;
 use hyprforge_ui::theme::{spacing, FontScale, BASE_TEXT_SIZE};
 use hyprforge_ui::widgets::{
@@ -33,6 +33,7 @@ use hyprforge_ui::widgets::{
 };
 use crate::modules::setup_notice::setup_notice;
 use crate::module::SettingsModule;
+use crate::modules::catalog_screen;
 use iced::widget::{checkbox, column, container, pick_list, row, scrollable, text_input};
 use iced::{Element, Length, Task};
 use std::collections::BTreeMap;
@@ -329,34 +330,16 @@ impl AppearanceModule {
     }
 
     fn apply_drafts(&mut self) -> Task<Message> {
-        self.draft_errors.clear();
-        let pending: Vec<(&'static str, String)> =
-            self.drafts.iter().map(|(k, v)| (*k, v.clone())).collect();
-        let mut applied = false;
-        for (key, raw) in pending {
-            let Some(setting) = catalog::get(key) else {
-                continue;
-            };
-            match setting_rows::parse_for(&setting.kind, &raw) {
-                Ok(value) => {
-                    let problems = Settings::from_one(key, value.clone()).validate(&CATALOG);
-                    if let Some(problem) = problems.first() {
-                        self.draft_errors.insert(key, problem.problem.clone());
-                    } else {
-                        self.stored.settings.set(key, value);
-                        self.drafts.remove(key);
-                        applied = true;
-                    }
-                }
-                Err(problem) => {
-                    self.draft_errors.insert(key, problem);
-                }
-            }
+        let applied = catalog_screen::apply_drafts(
+            &mut self.stored.settings,
+            &CATALOG,
+            &mut self.drafts,
+            &mut self.draft_errors,
+        );
+        match applied {
+            true => self.save_and_maybe_reload(),
+            false => Task::none(),
         }
-        if !applied {
-            return Task::none();
-        }
-        self.save_and_maybe_reload()
     }
 
     /// The animation a row should show: owned first, then whatever the
@@ -406,12 +389,10 @@ impl AppearanceModule {
         current
     }
 
+    /// Whether a setting is shown, for the text in the filter box — see
+    /// [`catalog_screen::matches_filter`].
     fn matches_filter(&self, setting: &Setting) -> bool {
-        let q = self.filter.trim().to_lowercase();
-        q.is_empty()
-            || setting.label.to_lowercase().contains(&q)
-            || setting.key.to_lowercase().contains(&q)
-            || setting.help.to_lowercase().contains(&q)
+        catalog_screen::matches_filter(&self.filter, setting)
     }
 }
 

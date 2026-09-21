@@ -61,7 +61,37 @@ const KINDS: &[Kind] = &[
         label: "Video",
         types: &["video/mp4", "video/x-matroska", "video/webm", "video/quicktime"],
     },
-    Kind { label: "Text", types: &["text/plain", "text/markdown", "text/csv"] },
+    Kind { label: "Text", types: &["text/plain", "text/markdown", "text/csv", "text/x-log"] },
+    // Everything a person means by "open it in my editor". One row
+    // rather than a dozen: nobody wants Python in one editor and Rust
+    // in another, and a row per language would bury the rows above.
+    //
+    // These are the names the database actually uses, checked rather
+    // than guessed: a shell script is `text/x-shellscript`, YAML is
+    // `application/yaml`, and Rust is `text/rust` with no `x-`.
+    // Shell scripts are the reason the row exists — with no default,
+    // opening one falls through to a web browser.
+    Kind {
+        label: "Code and config",
+        types: &[
+            "text/x-shellscript",
+            "application/json",
+            "application/yaml",
+            "application/toml",
+            "application/xml",
+            "text/x-python",
+            "text/rust",
+            "text/javascript",
+            "text/css",
+            "text/x-csrc",
+            "text/x-chdr",
+            "text/x-go",
+            "application/x-perl",
+            "application/x-ruby",
+            "application/sql",
+            "text/x-makefile",
+        ],
+    },
     Kind { label: "PDF documents", types: &["application/pdf"] },
     Kind {
         label: "Archives",
@@ -315,6 +345,38 @@ mod tests {
     fn every_kind_stands_for_at_least_one_type() {
         assert!(KINDS.iter().all(|k| !k.types.is_empty()));
         assert!(KINDS.iter().all(|k| !k.label.is_empty()));
+    }
+
+    /// No type appears in two kinds. It would be a row that silently
+    /// undoes the one above it: setting Text and then Code would leave
+    /// the shared type pointing wherever the second row was set.
+    #[test]
+    fn no_type_belongs_to_two_kinds() {
+        let mut seen: Vec<&str> = Vec::new();
+        for kind in KINDS {
+            for mime in kind.types {
+                assert!(!seen.contains(mime), "{mime} is in two kinds");
+                seen.push(mime);
+            }
+        }
+    }
+
+    /// The types this page exists to cover are the ones with no default
+    /// on a fresh machine — a shell script with none opens in a web
+    /// browser, which is where this whole piece of work started.
+    #[test]
+    fn the_types_that_fall_through_to_a_browser_are_offered() {
+        let all: Vec<&str> = KINDS.iter().flat_map(|k| k.types.iter().copied()).collect();
+        for mime in [
+            "text/x-shellscript",
+            "application/json",
+            "model/stl",
+            "model/3mf",
+            "image/png",
+            "video/mp4",
+        ] {
+            assert!(all.contains(&mime), "{mime} has no row to set it from");
+        }
     }
 
     /// The union rule: an application registered for any of a kind's

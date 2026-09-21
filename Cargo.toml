@@ -53,7 +53,29 @@ hyprforge-mime = { git = "https://github.com/adamrpostjr/hyprforge" }
 # so without this there is no PNG decoder and every wallpaper fails to
 # load. Cargo unifies features across the dependency graph, so declaring
 # the formats here is what switches them on for iced.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+#
+# The full list, matching the workspace root's, and kept matching by
+# `check.sh`'s "Standalone crate dependency pins" step — which is what
+# caught it when the root gained the rest of the decoders for the image
+# viewer. Inside this workspace unification means this crate builds with
+# them regardless; the list is what the standalone repository gets, and
+# a wallpaper picker that cannot show a .webp thumbnail would be a
+# strange thing to ship.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "webp",
+    "gif",
+    "tiff",
+    "bmp",
+    "ico",
+    "tga",
+    "qoi",
+    "pnm",
+    "hdr",
+    "exr",
+    "ff",
+] }
 async-trait = "0.1"
 # `web-colors` is in iced's own default features and is the reason the
 # Settings app and the greeter once drew the same theme in visibly

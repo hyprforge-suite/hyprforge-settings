@@ -1,4 +1,4 @@
-//! Which of `hyprforge-trayd`'s four icons show, and where
+//! Which of `hyprforge-trayd`'s five icons show, and where
 //! `hyprforge-traymenu` opens its right-click menu relative to the bar.
 //!
 //! Unlike every other module in this directory, this screen has no D-Bus
@@ -76,6 +76,7 @@ pub enum Message {
     BluetoothToggled(bool),
     KeepAwakeToggled(bool),
     NightLightToggled(bool),
+    PowerToggled(bool),
     /// Fired continuously while the slider is being dragged. Updates only
     /// [`TrayModule::offset_draft`] — see its own doc comment for why
     /// this does not write anything.
@@ -94,7 +95,7 @@ impl TrayModule {
     }
 
     /// Applies `f` to the field this toggle owns, through
-    /// `prefs::update` — see the module doc comment. Used by all four
+    /// `prefs::update` — see the module doc comment. Used by all five
     /// icon toggles; the slider commits through its own arm instead,
     /// since it has a draft value to reconcile.
     fn write(&mut self, f: impl FnOnce(&mut Prefs)) {
@@ -152,6 +153,10 @@ impl SettingsModule for TrayModule {
                 self.write(|p| p.night_light = shown);
                 Task::none()
             }
+            Message::PowerToggled(shown) => {
+                self.write(|p| p.power = shown);
+                Task::none()
+            }
             Message::OffsetChanged(value) => {
                 self.offset_draft = value;
                 Task::none()
@@ -184,10 +189,11 @@ impl SettingsModule for TrayModule {
 }
 
 impl TrayModule {
-    /// The four icon toggles, one section — mirrors the "Show in tray"
+    /// The five icon toggles, one section — mirrors the "Show in tray"
     /// checkbox Network and Bluetooth each already carry for their own
-    /// icon, gathered here alongside the two that have no screen of
-    /// their own to live on (keep-awake, night light).
+    /// icon, gathered here alongside the three that have no such
+    /// checkbox anywhere else (keep-awake, night light, and battery and
+    /// power profile).
     fn icons_section(&self, scale: FontScale) -> Element<'_, Message> {
         let body: Element<'_, Message> = match &self.tray_prefs {
             Ok(prefs) => column![
@@ -195,6 +201,7 @@ impl TrayModule {
                 icon_row(prefs.bluetooth, "Bluetooth", Message::BluetoothToggled, scale),
                 icon_row(prefs.keep_awake, "Keep awake", Message::KeepAwakeToggled, scale),
                 icon_row(prefs.night_light, "Night light", Message::NightLightToggled, scale),
+                icon_row(prefs.power, "Battery and power profile", Message::PowerToggled, scale),
             ]
             .spacing(spacing::SM)
             .into(),
@@ -275,7 +282,7 @@ impl TrayModule {
     }
 }
 
-/// One icon-toggle row, factored out because all four are identical apart
+/// One icon-toggle row, factored out because all five are identical apart
 /// from which field and which label.
 fn icon_row<'a>(
     shown: bool,
@@ -308,6 +315,7 @@ mod tests {
             assert!(prefs.bluetooth);
             assert!(!prefs.keep_awake);
             assert!(!prefs.night_light);
+            assert!(!prefs.power);
             assert_eq!(m.offset_draft, 32);
             assert!(m.error.is_none());
             let _ = m.view(FontScale::default());
@@ -345,6 +353,18 @@ mod tests {
             assert!(prefs.network, "untouched icon keeps its value");
             assert!(prefs.bluetooth, "untouched icon keeps its value");
             assert!(!prefs.night_light, "untouched icon keeps its value");
+            assert!(!prefs.power, "untouched icon keeps its value");
+        });
+    }
+
+    #[test]
+    fn the_power_toggle_writes_only_its_own_field() {
+        with_temp_config(|_dir| {
+            let (mut m, _task) = TrayModule::new();
+            let _ = m.update(Message::PowerToggled(true));
+            let on_disk = hyprforge_tray::prefs::load().unwrap();
+            assert!(on_disk.power);
+            assert_eq!(on_disk, Prefs { power: true, ..Prefs::default() });
         });
     }
 

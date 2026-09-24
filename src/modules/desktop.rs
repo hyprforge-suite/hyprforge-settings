@@ -395,7 +395,11 @@ impl DesktopModule {
             Tab::Wallpaper => {
                 let settings = self.wallpapers.clone();
                 Task::perform(
-                    apply_wallpapers(generated_dir.join("wallpaper.conf"), hypr.join("hyprpaper.conf"), settings),
+                    apply_wallpapers(
+                        hyprforge_ecosystem::wallpaper::generated_path(),
+                        hyprforge_ecosystem::wallpaper::hyprpaper_conf_path(),
+                        settings,
+                    ),
                     move |r| Message::Applied(tab, r),
                 )
             }
@@ -427,7 +431,7 @@ impl DesktopModule {
     fn daemon_config_path(tab: Tab) -> PathBuf {
         let hypr = hyprforge_core::paths::hypr_config_dir();
         match tab {
-            Tab::Wallpaper => hypr.join("hyprpaper.conf"),
+            Tab::Wallpaper => hyprforge_ecosystem::wallpaper::hyprpaper_conf_path(),
             Tab::NightLight => hypr.join("hyprsunset.conf"),
             Tab::Idle => hypr.join("hypridle.conf"),
             Tab::ScreenSharing => hypr.join("xdph.conf"),
@@ -1812,8 +1816,10 @@ fn minutes_now() -> u32 {
     sunset::parse_time(String::from_utf8_lossy(&out.stdout).trim()).unwrap_or(0)
 }
 
+/// Shared with the image viewer's Set as Wallpaper — see
+/// `hyprforge_ecosystem::wallpaper::settings_path`.
 fn wallpaper_toml() -> PathBuf {
-    hyprforge_core::paths::hyprforge_config_dir().join("wallpaper.toml")
+    hyprforge_ecosystem::wallpaper::settings_path()
 }
 
 fn sunset_toml() -> PathBuf {

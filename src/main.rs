@@ -35,7 +35,7 @@ use modules::window_rules::WindowRulesModule;
 /// It is also what makes a screen reviewable. Proving a page *looks*
 /// right means opening it and taking a picture, and without this there
 /// is no way to reach one from outside the app — Ctrl+1..3 cover three
-/// of the nine screens, and injecting a click needs tooling that is not
+/// of the thirteen screens, and injecting a click needs tooling that is not
 /// on every machine. A screenshot is how the `web-colors` bug was found;
 /// this is what makes taking one repeatable.
 fn screen_from_cli(name: &str) -> Option<(Screen, Option<modules::desktop::Tab>)> {

@@ -766,6 +766,18 @@ impl NetworkBackend for LazyNetworkManagerBackend {
         self.get().await?.access_points().await
     }
 
+    async fn wired(&self) -> Result<Vec<hyprforge_network::WiredStatus>, NetworkError> {
+        self.get().await?.wired().await
+    }
+
+    async fn wired_connect(&self, interface: &str) -> Result<(), NetworkError> {
+        self.get().await?.wired_connect(interface).await
+    }
+
+    async fn wired_disconnect(&self, interface: &str) -> Result<(), NetworkError> {
+        self.get().await?.wired_disconnect(interface).await
+    }
+
     async fn request_scan(&self) -> Result<(), NetworkError> {
         self.get().await?.request_scan().await
     }

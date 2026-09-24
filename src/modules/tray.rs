@@ -202,7 +202,7 @@ impl TrayModule {
     fn icons_section(&self, scale: FontScale) -> Element<'_, Message> {
         let body: Element<'_, Message> = match &self.tray_prefs {
             Ok(prefs) => column![
-                icon_row(prefs.network, "Wi-Fi", Message::NetworkToggled, scale),
+                icon_row(prefs.network, "Network (Wi-Fi and Ethernet)", Message::NetworkToggled, scale),
                 icon_row(prefs.bluetooth, "Bluetooth", Message::BluetoothToggled, scale),
                 icon_row(prefs.keep_awake, "Keep awake", Message::KeepAwakeToggled, scale),
                 icon_row(prefs.night_light, "Night light", Message::NightLightToggled, scale),

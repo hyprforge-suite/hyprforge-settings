@@ -1,4 +1,4 @@
-//! Which of `hyprforge-trayd`'s four icons show, and where
+//! Which of `hyprforge-trayd`'s six icons show, and where
 //! `hyprforge-traymenu` opens its right-click menu relative to the bar.
 //!
 //! Unlike every other module in this directory, this screen has no D-Bus
@@ -16,7 +16,7 @@
 //! `hyprforge-settings` process, and a save built from a copy loaded at
 //! construction can silently undo whatever another screen (or this one,
 //! left open in another window state) wrote in between. This module goes
-//! through the same `update` for all five fields it owns, for the same
+//! through the same `update` for every field it owns, for the same
 //! reason.
 
 use crate::module::SettingsModule;
@@ -76,6 +76,8 @@ pub enum Message {
     BluetoothToggled(bool),
     KeepAwakeToggled(bool),
     NightLightToggled(bool),
+    PowerToggled(bool),
+    DisplaysToggled(bool),
     /// Fired continuously while the slider is being dragged. Updates only
     /// [`TrayModule::offset_draft`] — see its own doc comment for why
     /// this does not write anything.
@@ -94,7 +96,7 @@ impl TrayModule {
     }
 
     /// Applies `f` to the field this toggle owns, through
-    /// `prefs::update` — see the module doc comment. Used by all four
+    /// `prefs::update` — see the module doc comment. Used by all six
     /// icon toggles; the slider commits through its own arm instead,
     /// since it has a draft value to reconcile.
     fn write(&mut self, f: impl FnOnce(&mut Prefs)) {
@@ -152,6 +154,14 @@ impl SettingsModule for TrayModule {
                 self.write(|p| p.night_light = shown);
                 Task::none()
             }
+            Message::PowerToggled(shown) => {
+                self.write(|p| p.power = shown);
+                Task::none()
+            }
+            Message::DisplaysToggled(shown) => {
+                self.write(|p| p.displays = shown);
+                Task::none()
+            }
             Message::OffsetChanged(value) => {
                 self.offset_draft = value;
                 Task::none()
@@ -184,17 +194,20 @@ impl SettingsModule for TrayModule {
 }
 
 impl TrayModule {
-    /// The four icon toggles, one section — mirrors the "Show in tray"
+    /// The six icon toggles, one section — mirrors the "Show in tray"
     /// checkbox Network and Bluetooth each already carry for their own
-    /// icon, gathered here alongside the two that have no screen of
-    /// their own to live on (keep-awake, night light).
+    /// icon, gathered here alongside the four that have no such checkbox
+    /// anywhere else (keep-awake, night light, battery and power profile,
+    /// and display layouts).
     fn icons_section(&self, scale: FontScale) -> Element<'_, Message> {
         let body: Element<'_, Message> = match &self.tray_prefs {
             Ok(prefs) => column![
-                icon_row(prefs.network, "Wi-Fi", Message::NetworkToggled, scale),
+                icon_row(prefs.network, "Network (Wi-Fi and Ethernet)", Message::NetworkToggled, scale),
                 icon_row(prefs.bluetooth, "Bluetooth", Message::BluetoothToggled, scale),
                 icon_row(prefs.keep_awake, "Keep awake", Message::KeepAwakeToggled, scale),
                 icon_row(prefs.night_light, "Night light", Message::NightLightToggled, scale),
+                icon_row(prefs.power, "Battery and power profile", Message::PowerToggled, scale),
+                icon_row(prefs.displays, "Display layouts", Message::DisplaysToggled, scale),
             ]
             .spacing(spacing::SM)
             .into(),
@@ -275,7 +288,7 @@ impl TrayModule {
     }
 }
 
-/// One icon-toggle row, factored out because all four are identical apart
+/// One icon-toggle row, factored out because all six are identical apart
 /// from which field and which label.
 fn icon_row<'a>(
     shown: bool,
@@ -308,6 +321,8 @@ mod tests {
             assert!(prefs.bluetooth);
             assert!(!prefs.keep_awake);
             assert!(!prefs.night_light);
+            assert!(!prefs.power);
+            assert!(!prefs.displays);
             assert_eq!(m.offset_draft, 32);
             assert!(m.error.is_none());
             let _ = m.view(FontScale::default());
@@ -345,6 +360,28 @@ mod tests {
             assert!(prefs.network, "untouched icon keeps its value");
             assert!(prefs.bluetooth, "untouched icon keeps its value");
             assert!(!prefs.night_light, "untouched icon keeps its value");
+            assert!(!prefs.power, "untouched icon keeps its value");
+        });
+    }
+
+    #[test]
+    fn the_displays_toggle_writes_only_its_own_field() {
+        with_temp_config(|_dir| {
+            let (mut m, _task) = TrayModule::new();
+            let _ = m.update(Message::DisplaysToggled(true));
+            let on_disk = hyprforge_tray::prefs::load().unwrap();
+            assert_eq!(on_disk, Prefs { displays: true, ..Prefs::default() });
+        });
+    }
+
+    #[test]
+    fn the_power_toggle_writes_only_its_own_field() {
+        with_temp_config(|_dir| {
+            let (mut m, _task) = TrayModule::new();
+            let _ = m.update(Message::PowerToggled(true));
+            let on_disk = hyprforge_tray::prefs::load().unwrap();
+            assert!(on_disk.power);
+            assert_eq!(on_disk, Prefs { power: true, ..Prefs::default() });
         });
     }
 

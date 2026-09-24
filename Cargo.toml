@@ -27,8 +27,9 @@ path = "src/main.rs"
 # exactly this reason: fifteen Hyprforge crates, not one or two.
 #
 # default-features = false, features = ["dbus"]: hyprforge-core's `dbus`
-# (zbus) support is optional and only the settings app and displayctl
-# want it — see the root workspace table's own comment on this crate.
+# (zbus) support is optional and only the settings app, displayctl and
+# the tray want it — see the root workspace table's own comment on this
+# crate.
 hyprforge-core = { git = "https://github.com/adamrpostjr/hyprforge", default-features = false, features = ["dbus"] }
 hyprforge-ui = { git = "https://github.com/adamrpostjr/hyprforge" }
 hyprforge-windowrules = { git = "https://github.com/adamrpostjr/hyprforge" }

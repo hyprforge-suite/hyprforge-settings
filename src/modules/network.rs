@@ -1,4 +1,5 @@
-//! Wi-Fi: the radio, the network list, joining, and saved networks.
+//! The Network screen: wired interfaces, and Wi-Fi — the radio, the
+//! network list, joining, and saved networks.
 //!
 //! Everything that talks to NetworkManager lives in `hyprforge-network`
 //! already — this module is the screen on top of it, and nothing more.
@@ -17,7 +18,9 @@
 //! moment it crosses into `hyprforge_network::NetworkBackend::connect`.
 
 use hyprforge_network::backend::{for_display, NetworkBackend, SavedNetwork, Status};
-use hyprforge_network::{AccessPoint, NetworkError, Psk, RadioState, Security};
+use hyprforge_network::{
+    AccessPoint, NetworkError, Psk, RadioState, Security, WiredState, WiredStatus,
+};
 use hyprforge_tray::Prefs as TrayPrefs;
 use hyprforge_ui::theme::{self, spacing, FontScale, BASE_TEXT_SIZE};
 use hyprforge_ui::widgets::{meta_text, primary_button, scaled_text, secondary_button, section};
@@ -48,26 +51,32 @@ const POLL_INTERVAL: Duration = Duration::from_secs(10);
 pub struct LoadError {
     message: String,
     unavailable: bool,
+    /// [`NetworkError::NoWifiDevice`]: a machine with no Wi-Fi adapter,
+    /// which is a kind of machine and not a failure — a desktop on a
+    /// cable. It used to reach the warning banner on every refresh.
+    no_wifi_device: bool,
 }
 
 impl From<NetworkError> for LoadError {
     fn from(e: NetworkError) -> Self {
         LoadError {
             unavailable: matches!(e, NetworkError::Unavailable),
+            no_wifi_device: matches!(e, NetworkError::NoWifiDevice),
             message: e.to_string(),
         }
     }
 }
 
-/// The result of one refresh: three independent calls, three independent
+/// The result of one refresh: four independent calls, four independent
 /// outcomes. A failure in `access_points` must not discard a successful
 /// `status`, and vice versa — the screen shows as much true information
-/// as it has, not the least common denominator of three calls.
+/// as it has, not the least common denominator of four calls.
 #[derive(Debug, Clone)]
 pub struct Loaded {
     status: Result<Status, LoadError>,
     access_points: Result<Vec<AccessPoint>, LoadError>,
     saved: Result<Vec<SavedNetwork>, LoadError>,
+    wired: Result<Vec<WiredStatus>, LoadError>,
 }
 
 async fn load<B: NetworkBackend + ?Sized>(backend: Arc<B>) -> Loaded {
@@ -75,7 +84,51 @@ async fn load<B: NetworkBackend + ?Sized>(backend: Arc<B>) -> Loaded {
         status: backend.status().await.map_err(LoadError::from),
         access_points: backend.access_points().await.map_err(LoadError::from),
         saved: backend.saved_networks().await.map_err(LoadError::from),
+        wired: backend.wired().await.map_err(LoadError::from),
     }
+}
+
+/// What a wired row's button does, if it has one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WiredAction {
+    Connect,
+    Disconnect,
+}
+
+/// The one control a wired port gets.
+///
+/// An unplugged port gets none — nothing on screen plugs a cable in, and
+/// a Connect that can only fail is a button that lies. A port already
+/// connecting gets none either, rather than a second request racing the
+/// first.
+fn wired_action(state: WiredState) -> Option<WiredAction> {
+    match state {
+        WiredState::Connected => Some(WiredAction::Disconnect),
+        WiredState::Disconnected => Some(WiredAction::Connect),
+        WiredState::Connecting | WiredState::CableUnplugged => None,
+    }
+}
+
+/// A wired port's second line: its state, then whatever NetworkManager
+/// adds to it.
+fn wired_detail(port: &WiredStatus) -> String {
+    let mut parts = vec![port.interface.clone()];
+    parts.push(
+        match port.state {
+            WiredState::Connected => "Connected",
+            WiredState::Connecting => "Connecting…",
+            WiredState::CableUnplugged => "Cable unplugged",
+            WiredState::Disconnected => "Cable plugged in, not connected",
+        }
+        .to_string(),
+    );
+    if let Some(name) = &port.connection {
+        parts.push(name.clone());
+    }
+    if let Some(speed) = port.speed_mbps {
+        parts.push(format!("{speed} Mb/s"));
+    }
+    parts.join(" \u{b7} ")
 }
 
 /// Whether the radio row gets a control that can actually do something.
@@ -134,7 +187,12 @@ pub enum Message {
     Connected(Result<(), LoadError>),
     ForgetPressed(String),
     Forgotten(String, Result<(), LoadError>),
-    /// Whether `hyprforge-trayd` should show the Wi-Fi icon.
+    /// A wired port's button, by interface name — the handle
+    /// `hyprforge-network` addresses ports by.
+    WiredConnect(String),
+    WiredDisconnect(String),
+    WiredChanged(Result<(), LoadError>),
+    /// Whether `hyprforge-trayd` should show the network icon.
     ///
     /// Only reachable from a loaded [`TrayPrefs`] — see `tray_row` — so
     /// this never has to guess a value for the field it does not own
@@ -163,6 +221,16 @@ pub struct NetworkModule<B: NetworkBackend + 'static> {
     /// does not re-implement that.
     access_points: Vec<AccessPoint>,
     saved: Vec<SavedNetwork>,
+    /// Every Ethernet port NetworkManager manages; empty on most laptops.
+    wired: Vec<WiredStatus>,
+    /// The port a Connect or Disconnect is in flight for, so its button
+    /// can say so and not be pressed twice.
+    wired_busy: Option<String>,
+    /// `false` on a machine with no Wi-Fi adapter — see
+    /// [`LoadError::no_wifi_device`]. Starts `true`: a Wi-Fi section that
+    /// disappears once the first load says so is better than one that
+    /// appears late on nearly every machine.
+    wifi_present: bool,
     scanning: bool,
     joining: Option<JoinDraft>,
     /// The on-disk `tray.toml`, loaded once at construction.
@@ -204,6 +272,9 @@ impl<B: NetworkBackend + 'static> NetworkModule<B> {
             status: None,
             access_points: Vec::new(),
             saved: Vec::new(),
+            wired: Vec::new(),
+            wired_busy: None,
+            wifi_present: true,
             scanning: false,
             joining: None,
             tray_prefs,
@@ -241,6 +312,7 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
                     result.status.as_ref().err(),
                     result.access_points.as_ref().err(),
                     result.saved.as_ref().err(),
+                    result.wired.as_ref().err(),
                 ]
                 .into_iter()
                 .flatten()
@@ -252,6 +324,7 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
                     self.status = None;
                     self.access_points.clear();
                     self.saved.clear();
+                    self.wired.clear();
                     return Task::none();
                 }
                 self.unavailable = None;
@@ -260,7 +333,21 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
                     Err(e) => self.error = Some(e.message),
                 }
                 match result.access_points {
-                    Ok(points) => self.access_points = for_display(points),
+                    Ok(points) => {
+                        self.wifi_present = true;
+                        self.access_points = for_display(points);
+                    }
+                    // A state, not an error: the Wi-Fi section says it
+                    // quietly instead of the banner saying it every ten
+                    // seconds.
+                    Err(e) if e.no_wifi_device => {
+                        self.wifi_present = false;
+                        self.access_points.clear();
+                    }
+                    Err(e) => self.error = Some(e.message),
+                }
+                match result.wired {
+                    Ok(wired) => self.wired = wired,
                     Err(e) => self.error = Some(e.message),
                 }
                 match result.saved {
@@ -430,6 +517,36 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
                 self.error = Some(e.message);
                 Task::none()
             }
+            // One at a time: a second click while the first is in flight
+            // would race it, and the button already says busy.
+            Message::WiredConnect(_) | Message::WiredDisconnect(_) if self.wired_busy.is_some() => {
+                Task::none()
+            }
+            Message::WiredConnect(interface) => {
+                self.error = None;
+                self.wired_busy = Some(interface.clone());
+                let backend = Arc::clone(&self.backend);
+                Task::perform(
+                    async move { backend.wired_connect(&interface).await.map_err(LoadError::from) },
+                    Message::WiredChanged,
+                )
+            }
+            Message::WiredDisconnect(interface) => {
+                self.error = None;
+                self.wired_busy = Some(interface.clone());
+                let backend = Arc::clone(&self.backend);
+                Task::perform(
+                    async move { backend.wired_disconnect(&interface).await.map_err(LoadError::from) },
+                    Message::WiredChanged,
+                )
+            }
+            Message::WiredChanged(result) => {
+                self.wired_busy = None;
+                if let Err(e) = result {
+                    self.error = Some(e.message);
+                }
+                self.refresh_task()
+            }
             Message::TrayToggled(shown) => {
                 // Read-modify-write, not save-what-`new`-loaded: the Tray
                 // screen (or Bluetooth, or a hand edit) may have changed
@@ -477,7 +594,7 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
             // an error nobody can currently do anything about. Hiding the
             // switch that turns it off is its own small dead end.
             content = content.push(section(
-                "Wi-Fi",
+                "Network",
                 scale,
                 column![scaled_text(msg.clone(), BASE_TEXT_SIZE, scale), self.tray_row(scale)]
                     .spacing(spacing::SM),
@@ -487,6 +604,20 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
 
         if self.loading {
             content = content.push(meta_text("Loading…", BASE_TEXT_SIZE, scale));
+            return content.into();
+        }
+
+        if !self.wired.is_empty() {
+            content = content.push(self.wired_section(scale));
+        }
+
+        if !self.wifi_present {
+            content = content.push(section(
+                "Wi-Fi",
+                scale,
+                meta_text("This machine has no Wi-Fi adapter.", BASE_TEXT_SIZE, scale),
+            ));
+            content = content.push(section("Tray", scale, self.tray_row(scale)));
             return content.into();
         }
 
@@ -503,6 +634,11 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
         if let Some(join) = &self.joining {
             content = content.push(self.join_dialog(join, scale));
         }
+
+        // Its own section now rather than a row under Wi-Fi: the tray
+        // icon covers the cable too, and a switch inside the Wi-Fi
+        // section read as switching a Wi-Fi-only icon.
+        content = content.push(section("Tray", scale, self.tray_row(scale)));
 
         content.into()
     }
@@ -554,10 +690,52 @@ impl<B: NetworkBackend + 'static> NetworkModule<B> {
             }
             None => meta_text("Wi-Fi status unknown.", BASE_TEXT_SIZE, scale).into(),
         };
-        section("Wi-Fi", scale, column![body, self.tray_row(scale)].spacing(spacing::SM))
+        section("Wi-Fi", scale, body)
     }
 
-    /// The "show in tray" row, appended to the Wi-Fi section.
+    /// One row per Ethernet port: its name and state, and the one button
+    /// [`wired_action`] allows it.
+    fn wired_section(&self, scale: FontScale) -> Element<'_, Message> {
+        let mut list = column![].spacing(spacing::SM);
+        for (i, port) in self.wired.iter().enumerate() {
+            if i > 0 {
+                list = list.push(hyprforge_ui::widgets::divider());
+            }
+            let line = column![
+                scaled_text("Ethernet", BASE_TEXT_SIZE, scale),
+                meta_text(wired_detail(port), 12.0, scale),
+            ]
+            .spacing(2.0);
+            let busy = self.wired_busy.as_deref() == Some(port.interface.as_str());
+            let action: Element<'_, Message> = match wired_action(port.state) {
+                Some(WiredAction::Connect) => secondary_button(if busy { "Connecting…" } else { "Connect" })
+                    .on_press_maybe(
+                        self.wired_busy
+                            .is_none()
+                            .then(|| Message::WiredConnect(port.interface.clone())),
+                    )
+                    .into(),
+                Some(WiredAction::Disconnect) => {
+                    secondary_button(if busy { "Disconnecting…" } else { "Disconnect" })
+                        .on_press_maybe(
+                            self.wired_busy
+                                .is_none()
+                                .then(|| Message::WiredDisconnect(port.interface.clone())),
+                        )
+                        .into()
+                }
+                None => row![].into(),
+            };
+            list = list.push(
+                row![line.width(Length::Fill), action]
+                    .spacing(spacing::SM)
+                    .align_y(Alignment::Center),
+            );
+        }
+        section("Wired", scale, list)
+    }
+
+    /// The "show in tray" row, in a section of its own at the bottom.
     ///
     /// Unlike `radio_row`, this doesn't depend on live NetworkManager
     /// status — the preference lives entirely in `tray_prefs`, loaded
@@ -824,7 +1002,7 @@ mod tests {
     }
 
     fn loaded(status: Status, points: Vec<AccessPoint>, saved: Vec<SavedNetwork>) -> Loaded {
-        Loaded { status: Ok(status), access_points: Ok(points), saved: Ok(saved) }
+        Loaded { status: Ok(status), access_points: Ok(points), saved: Ok(saved), wired: Ok(vec![]) }
     }
 
     fn status(radio: RadioState, connected_to: Option<&str>) -> Status {
@@ -946,6 +1124,108 @@ mod tests {
         let _ = backend;
     }
 
+    fn port(interface: &str, state: WiredState) -> WiredStatus {
+        WiredStatus {
+            interface: interface.to_string(),
+            state,
+            connection: (state == WiredState::Connected).then(|| "Wired connection 1".to_string()),
+            speed_mbps: (state == WiredState::Connected).then_some(1000),
+        }
+    }
+
+    fn loaded_with_wired(wired: Vec<WiredStatus>) -> Loaded {
+        Loaded { wired: Ok(wired), ..loaded(status(RadioState::On, None), vec![], vec![]) }
+    }
+
+    /// No button for an unplugged port — no click plugs a cable in — and
+    /// none for one already connecting, so a second request can't race
+    /// the first.
+    #[test]
+    fn only_a_port_something_can_be_done_about_gets_a_button() {
+        assert_eq!(wired_action(WiredState::Connected), Some(WiredAction::Disconnect));
+        assert_eq!(wired_action(WiredState::Disconnected), Some(WiredAction::Connect));
+        assert_eq!(wired_action(WiredState::CableUnplugged), None);
+        assert_eq!(wired_action(WiredState::Connecting), None);
+    }
+
+    #[test]
+    fn a_connected_ports_line_names_its_connection_and_speed() {
+        assert_eq!(
+            wired_detail(&port("enp3s0", WiredState::Connected)),
+            "enp3s0 \u{b7} Connected \u{b7} Wired connection 1 \u{b7} 1000 Mb/s"
+        );
+        assert_eq!(
+            wired_detail(&port("enp3s0", WiredState::CableUnplugged)),
+            "enp3s0 \u{b7} Cable unplugged"
+        );
+    }
+
+    #[test]
+    fn wired_ports_are_shown_in_every_state() {
+        let (mut m, _backend) = module();
+        let _ = m.update(Message::Loaded(loaded_with_wired(vec![
+            port("enp3s0", WiredState::Connected),
+            port("enp4s0", WiredState::Disconnected),
+            port("enx0011", WiredState::CableUnplugged),
+            port("enx0022", WiredState::Connecting),
+        ])));
+        assert_eq!(m.wired.len(), 4);
+        let _ = m.view(FontScale::default());
+    }
+
+    /// A desktop on a cable is a kind of machine, not a failure: no
+    /// banner every ten seconds, and no Wi-Fi toggle for a radio that
+    /// isn't there — just a quiet line saying so.
+    #[test]
+    fn a_machine_with_no_wifi_adapter_is_a_state_not_a_warning() {
+        let (mut m, _backend) = module();
+        let _ = m.update(Message::Loaded(Loaded {
+            access_points: Err(LoadError::from(NetworkError::NoWifiDevice)),
+            ..loaded_with_wired(vec![port("enp3s0", WiredState::Connected)])
+        }));
+        assert!(!m.wifi_present);
+        assert!(m.error.is_none(), "{:?}", m.error);
+        assert!(m.unavailable.is_none());
+        let _ = m.view(FontScale::default());
+    }
+
+    /// Whichever call notices NetworkManager is gone wins — the wired one
+    /// included — so an outage never renders as "no wired ports".
+    #[test]
+    fn networkmanager_going_away_mid_refresh_is_noticed_by_the_wired_read_too() {
+        let (mut m, _backend) = module();
+        let _ = m.update(Message::Loaded(Loaded {
+            wired: Err(LoadError::from(NetworkError::Unavailable)),
+            ..loaded(status(RadioState::On, None), vec![], vec![])
+        }));
+        assert!(m.unavailable.is_some());
+    }
+
+    #[test]
+    fn a_second_wired_click_while_one_is_in_flight_does_nothing() {
+        let (mut m, _backend) = module();
+        let _ = m.update(Message::Loaded(loaded_with_wired(vec![
+            port("enp3s0", WiredState::Disconnected),
+            port("enp4s0", WiredState::Connected),
+        ])));
+        let _ = m.update(Message::WiredConnect("enp3s0".to_string()));
+        assert_eq!(m.wired_busy.as_deref(), Some("enp3s0"));
+        let _ = m.update(Message::WiredDisconnect("enp4s0".to_string()));
+        assert_eq!(m.wired_busy.as_deref(), Some("enp3s0"), "the second click was not taken");
+        let _ = m.view(FontScale::default());
+    }
+
+    #[test]
+    fn a_failed_wired_change_says_why_and_frees_the_buttons() {
+        let (mut m, _backend) = module();
+        let _ = m.update(Message::WiredConnect("enp3s0".to_string()));
+        let _ = m.update(Message::WiredChanged(Err(LoadError::from(NetworkError::Refused(
+            "The cable is unplugged.".to_string(),
+        )))));
+        assert!(m.wired_busy.is_none());
+        assert_eq!(m.error.as_deref(), Some("The cable is unplugged."));
+    }
+
     /// The tray toggle does not depend on NetworkManager, and is wanted
     /// most when NetworkManager is down — that is when the icon is
     /// sitting in the bar showing an error. The unavailable branch
@@ -958,6 +1238,7 @@ mod tests {
             status: Err(LoadError::from(NetworkError::Unavailable)),
             access_points: Err(LoadError::from(NetworkError::Unavailable)),
             saved: Err(LoadError::from(NetworkError::Unavailable)),
+            wired: Err(LoadError::from(NetworkError::Unavailable)),
         }));
         assert!(m.unavailable.is_some(), "precondition: the screen is on its dead-end path");
         // `view` is what renders the row; it must not panic and must be
@@ -979,6 +1260,7 @@ mod tests {
             status: Err(LoadError::from(NetworkError::Unavailable)),
             access_points: Err(LoadError::from(NetworkError::Unavailable)),
             saved: Err(LoadError::from(NetworkError::Unavailable)),
+            wired: Err(LoadError::from(NetworkError::Unavailable)),
         }));
         assert!(m.unavailable.as_ref().is_some_and(|msg| msg.contains("isn't running")));
         assert!(m.access_points.is_empty(), "no networks to show while the daemon is gone");
@@ -1178,6 +1460,7 @@ mod tests {
             status: Err(LoadError::from(NetworkError::Unavailable)),
             access_points: Err(LoadError::from(NetworkError::Unavailable)),
             saved: Err(LoadError::from(NetworkError::Unavailable)),
+            wired: Err(LoadError::from(NetworkError::Unavailable)),
         }));
         let _ = m.view(scale); // unavailable
 
@@ -1209,6 +1492,7 @@ mod tests {
             status: Ok(status(RadioState::On, Some("home"))),
             access_points: Ok(points),
             saved: Ok(saved),
+            wired: Ok(vec![]),
         }));
         let _ = m.view(scale); // populated, one connected, one saved
 

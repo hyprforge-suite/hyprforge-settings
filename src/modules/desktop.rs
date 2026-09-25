@@ -35,6 +35,8 @@ pub enum Tab {
 }
 
 impl Tab {
+    /// Every tab, for tests that walk them all.
+    #[cfg(test)]
     const ALL: [Tab; 4] =
         [Tab::Wallpaper, Tab::NightLight, Tab::Idle, Tab::ScreenSharing];
 
@@ -42,7 +44,9 @@ impl Tab {
         match self {
             Tab::Wallpaper => "Wallpaper",
             Tab::NightLight => "Night light",
-            Tab::Idle => "Idle",
+            // The sidebar page's name, because `label` is what the note
+            // left in a retired config file points the user to.
+            Tab::Idle => "Idle & lock",
             Tab::ScreenSharing => "Screen sharing",
         }
     }
@@ -352,16 +356,6 @@ impl DesktopModule {
     /// Nothing irreversible runs unless the write returned `Ok` — the
     /// ordering rule that exists because doing it the other way round
     /// cost a real user 37 hand-written binds.
-    /// Opens the screen on a particular tab.
-    ///
-    /// For `--screen night-light` and the tray icons that use it: a
-    /// setting that lives on a tab is not reachable by naming the screen
-    /// alone, and landing someone on Wallpaper when they asked for night
-    /// light is the same miss as not deep-linking at all.
-    pub fn open_on(&mut self, tab: Tab) {
-        self.tab = tab;
-    }
-
     fn save(&mut self, tab: Tab) -> Task<Message> {
         if let Some(reason) = &self.store_unreadable {
             self.error = Some(format!(
@@ -589,7 +583,7 @@ impl DesktopModule {
             return;
         };
         let note = format!(
-            "now in Hyprforge Settings → Desktop → {} (original in {})",
+            "now in Hyprforge Settings → {} (original in {})",
             self.tab.label(),
             backup.file_name().and_then(|n| n.to_str()).unwrap_or("the .hyprforge.bak file")
         );
@@ -1096,16 +1090,9 @@ impl SettingsModule for DesktopModule {
             content = content.push(meta_text(s.clone(), 12.0, scale));
         }
 
-        let mut tabs = row![].spacing(spacing::SM);
-        for tab in Tab::ALL {
-            let button = if tab == self.tab {
-                primary_button(tab.label())
-            } else {
-                secondary_button(tab.label())
-            };
-            tabs = tabs.push(button.on_press(Message::TabSelected(tab)));
-        }
-        content = content.push(tabs);
+        // No tab row: Wallpaper, Night light, Idle & lock and Screen
+        // sharing are sidebar pages of their own now, and the shell picks
+        // the tab by sending `TabSelected`.
 
         // Offered only while no review is open, so the screen never shows
         // an Import button above a list the user is already reviewing.

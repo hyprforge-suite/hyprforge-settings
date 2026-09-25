@@ -50,15 +50,10 @@ pub enum Tab {
 }
 
 impl Tab {
+    /// Every tab, for tests that walk them all. Nothing else lists them:
+    /// each is a sidebar page now, and the shell names the one it wants.
+    #[cfg(test)]
     const ALL: [Tab; 3] = [Tab::Theme, Tab::Windows, Tab::Animations];
-
-    fn label(self) -> &'static str {
-        match self {
-            Tab::Theme => "Theme",
-            Tab::Windows => "Windows",
-            Tab::Animations => "Animations",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -399,8 +394,14 @@ impl AppearanceModule {
 impl SettingsModule for AppearanceModule {
     type Message = Message;
 
-    /// The Hyprland half's settings. They live on the Windows tab, so
-    /// revealing one switches there before narrowing the filter.
+    /// Import reads Hyprland's own config, so it belongs on the two pages
+    /// made of Hyprland settings and not on the desktop-theme page.
+    fn header_actions(&self, _scale: FontScale) -> Option<Element<'_, Message>> {
+        (self.tab != Tab::Theme)
+            .then(|| secondary_button("Import from Hyprland").on_press(Message::ImportOpen).into())
+    }
+
+    /// The Hyprland half's settings, all on the Windows & workspaces page.
     fn search_entries(&self) -> Vec<crate::module::SearchEntry<Message>> {
         CATALOG
             .settings
@@ -409,10 +410,9 @@ impl SettingsModule for AppearanceModule {
                 label: setting.label,
                 key: setting.key,
                 value: self.stored.settings.get(setting.key).map(crate::module::value_text),
-                reveal: vec![
-                    Message::TabSelected(Tab::Windows),
-                    Message::FilterChanged(setting.key.to_string()),
-                ],
+                // The shell opens the Windows & workspaces page, which
+                // selects the tab; this only narrows the filter.
+                reveal: vec![Message::FilterChanged(setting.key.to_string())],
             })
             .collect()
     }
@@ -746,23 +746,10 @@ impl SettingsModule for AppearanceModule {
             content = content.push(meta_text(s.clone(), 12.0, scale));
         }
 
-        let mut tabs = row![].spacing(spacing::SM);
-        for tab in Tab::ALL {
-            let button = if tab == self.tab {
-                primary_button(tab.label())
-            } else {
-                secondary_button(tab.label())
-            };
-            tabs = tabs.push(button.on_press(Message::TabSelected(tab)));
-        }
-        content = content.push(
-            row![
-                tabs,
-                secondary_button("Import from Hyprland").on_press(Message::ImportOpen),
-            ]
-            .spacing(spacing::MD)
-            .align_y(iced::Alignment::Center),
-        );
+        // No tab row: each tab is a page of its own in the sidebar now
+        // (Appearance, Windows & workspaces, Animations), and the shell
+        // picks the tab by sending `TabSelected`. Import moved to the
+        // title row.
 
         // Shown on every tab whose rows the filter actually hides.
         // Without it on Animations, a filter typed under Windows silently

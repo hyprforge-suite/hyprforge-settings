@@ -40,37 +40,33 @@ use modules::window_rules::WindowRulesModule;
 /// It is also what makes a screen reviewable. Proving a page *looks*
 /// right means opening it and taking a picture, and without this there
 /// is no way to reach one from outside the app — Ctrl+1..3 cover three
-/// of the thirteen screens, and injecting a click needs tooling that is not
+/// of the eighteen pages, and injecting a click needs tooling that is not
 /// on every machine. A screenshot is how the `web-colors` bug was found;
 /// this is what makes taking one repeatable.
-fn screen_from_cli(name: &str) -> Option<(Screen, Option<modules::desktop::Tab>)> {
-    use modules::desktop::Tab;
+fn screen_from_cli(name: &str) -> Option<Screen> {
     let screen = match name.trim().to_ascii_lowercase().replace('_', "-").as_str() {
-        "monitors" | "displays" => (Screen::Monitors, None),
-        "window-rules" | "windowrules" | "rules" => (Screen::WindowRules, None),
-        "shortcuts" | "keybinds" => (Screen::Shortcuts, None),
-        "input" | "keyboard" => (Screen::Input, None),
-        "network" | "wifi" | "wi-fi" => (Screen::Network, None),
-        "bluetooth" | "bt" => (Screen::Bluetooth, None),
-        // This is the name the tray's keep-awake menu is meant to link
-        // to next — see the module doc comment on `modules::power` and
-        // the `--screen idle` stand-in it replaces.
-        "power" => (Screen::Power, None),
-        "tray" => (Screen::Tray, None),
-        "appearance" | "theme" => (Screen::Appearance, None),
-        "desktop" => (Screen::Desktop, None),
-        // These name a *tab*. A setting that lives on one is not
-        // reachable by naming its screen alone, and landing someone on
-        // Wallpaper when they asked for night light is the same miss as
-        // not deep-linking at all. The tray icons are why: each opens the
-        // page carrying its own setting.
-        "wallpaper" => (Screen::Desktop, Some(Tab::Wallpaper)),
-        "night-light" | "nightlight" => (Screen::Desktop, Some(Tab::NightLight)),
-        "idle" | "keep-awake" => (Screen::Desktop, Some(Tab::Idle)),
-        "screen-sharing" | "screensharing" => (Screen::Desktop, Some(Tab::ScreenSharing)),
-        "default-apps" | "defaults" | "applications" => (Screen::DefaultApps, None),
-        "session" | "autostart" => (Screen::Session, None),
-        "system" => (Screen::System, None),
+        "displays" | "monitors" => Screen::Monitors,
+        "power" | "battery" => Screen::Power,
+        "keyboard-mouse" | "input" | "keyboard" | "mouse" => Screen::Input,
+        "default-apps" | "defaults" | "applications" => Screen::DefaultApps,
+        "network" | "wifi" | "wi-fi" => Screen::Network,
+        "bluetooth" | "bt" => Screen::Bluetooth,
+        "windows" | "workspaces" | "windows-workspaces" => Screen::WindowsWorkspaces,
+        "keybinds" | "shortcuts" => Screen::Shortcuts,
+        "animations" => Screen::Animations,
+        "window-rules" | "windowrules" | "rules" => Screen::WindowRules,
+        // `keep-awake` is the tray's name for it, and has been since
+        // before idle was a page of its own.
+        "idle" | "keep-awake" | "idle-lock" => Screen::Idle,
+        "session" | "autostart" => Screen::Session,
+        "advanced" | "system" => Screen::System,
+        "appearance" | "theme" => Screen::Appearance,
+        // `desktop` was the screen these four pages were tabs of, and it
+        // always opened on its first — so it still opens there.
+        "wallpaper" | "desktop" => Screen::Wallpaper,
+        "night-light" | "nightlight" => Screen::NightLight,
+        "screen-sharing" | "screensharing" => Screen::Sharing,
+        "tray" => Screen::Tray,
         _ => return None,
     };
     Some(screen)
@@ -89,23 +85,24 @@ pub(crate) fn screen_name_is_known(name: &str) -> bool {
 /// aliases are deliberately left out: one canonical name per screen is
 /// what a help text is for.
 const SCREEN_NAMES: &[&str] = &[
-    "monitors",
-    "window-rules",
-    "shortcuts",
-    "input",
+    "displays",
+    "power",
+    "keyboard-mouse",
+    "default-apps",
     "network",
     "bluetooth",
-    "power",
-    "tray",
+    "windows",
+    "keybinds",
+    "animations",
+    "window-rules",
+    "idle",
+    "session",
+    "advanced",
     "appearance",
-    "desktop",
-    "default-apps",
     "wallpaper",
     "night-light",
-    "idle",
     "screen-sharing",
-    "session",
-    "system",
+    "tray",
 ];
 
 const SIDEBAR_WIDTH: f32 = 240.0;
@@ -171,16 +168,6 @@ const APP_ID: &str = "hyprforge-settings";
 /// Set once from `--screen` before iced starts. A static because
 /// `iced::daemon` builds the app from a function taking no arguments.
 static INITIAL_SCREEN: std::sync::OnceLock<Screen> = std::sync::OnceLock::new();
-
-/// The tab to open the Desktop screen on, when `--screen` named one.
-///
-/// Some settings live on a tab rather than a screen, and landing a user
-/// on the Desktop screen's first tab when they asked for night light is
-/// the same kind of miss as not deep-linking at all. The tray's icons
-/// are the reason this exists: each one opens the page its own setting
-/// is on.
-static INITIAL_DESKTOP_TAB: std::sync::OnceLock<modules::desktop::Tab> =
-    std::sync::OnceLock::new();
 
 /// Set from `--search`: text to open the window with in the search
 /// field, palette showing.
@@ -252,11 +239,8 @@ fn main() -> iced::Result {
             std::process::exit(2);
         };
         match screen_from_cli(&value) {
-            Some((screen, tab)) => {
+            Some(screen) => {
                 INITIAL_SCREEN.set(screen).ok().unwrap_or(());
-                if let Some(tab) = tab {
-                    INITIAL_DESKTOP_TAB.set(tab).ok().unwrap_or(());
-                }
                 requested_screen = Some(value);
             }
             None => {
@@ -468,9 +452,137 @@ async fn focus_self() {
     }
 }
 
+/// A page in the sidebar.
+///
+/// Not the same thing as a module: Appearance's three tabs and Desktop's
+/// four are pages of their own, each backed by the one module that holds
+/// their state — see [`Screen::host`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Monitors,
+    Power,
+    Input,
+    DefaultApps,
+    Network,
+    Bluetooth,
+    WindowsWorkspaces,
+    Shortcuts,
+    Animations,
+    WindowRules,
+    Idle,
+    Session,
+    System,
+    Appearance,
+    Wallpaper,
+    NightLight,
+    Sharing,
+    Tray,
+}
+
+impl Screen {
+    fn title(self) -> &'static str {
+        match self {
+            Screen::Monitors => "Displays",
+            Screen::Power => "Power & battery",
+            Screen::Input => "Keyboard & mouse",
+            Screen::DefaultApps => "Default apps",
+            Screen::Network => "Network",
+            Screen::Bluetooth => "Bluetooth",
+            Screen::WindowsWorkspaces => "Windows & workspaces",
+            Screen::Shortcuts => "Keybinds",
+            Screen::Animations => "Animations",
+            Screen::WindowRules => "Window rules",
+            Screen::Idle => "Idle & lock",
+            // Not the mockup's "Autostart & environment": the page also
+            // holds gestures and permissions, and a name listing two of
+            // its four tabs hides the other two.
+            Screen::Session => "Session",
+            Screen::System => "Advanced",
+            Screen::Appearance => "Appearance",
+            Screen::Wallpaper => "Wallpaper",
+            Screen::NightLight => "Night light",
+            Screen::Sharing => "Screen sharing",
+            Screen::Tray => "Tray",
+        }
+    }
+
+    /// The mark beside this page in the sidebar.
+    fn glyph(self) -> hyprforge_ui::glyph::Page {
+        use hyprforge_ui::glyph::Page;
+        match self {
+            Screen::Monitors => Page::Display,
+            Screen::Power => Page::Power,
+            Screen::Input => Page::Keyboard,
+            Screen::DefaultApps => Page::Apps,
+            Screen::Network => Page::Network,
+            Screen::Bluetooth => Page::Bluetooth,
+            Screen::WindowsWorkspaces => Page::Windows,
+            Screen::Shortcuts => Page::Keybinds,
+            Screen::Animations => Page::Animation,
+            Screen::WindowRules => Page::WindowRules,
+            Screen::Idle => Page::Idle,
+            Screen::Session => Page::Session,
+            Screen::System => Page::Advanced,
+            Screen::Appearance => Page::Appearance,
+            Screen::Wallpaper => Page::Wallpaper,
+            Screen::NightLight => Page::NightLight,
+            Screen::Sharing => Page::ScreenSharing,
+            Screen::Tray => Page::Tray,
+        }
+    }
+
+    /// The module that holds this page's state and draws its body.
+    fn host(self) -> Host {
+        match self {
+            Screen::Monitors => Host::Displays,
+            Screen::Power => Host::Power,
+            Screen::Input => Host::Input,
+            Screen::DefaultApps => Host::DefaultApps,
+            Screen::Network => Host::Network,
+            Screen::Bluetooth => Host::Bluetooth,
+            Screen::Shortcuts => Host::Shortcuts,
+            Screen::WindowRules => Host::WindowRules,
+            Screen::Session => Host::Session,
+            Screen::System => Host::System,
+            Screen::Tray => Host::Tray,
+            Screen::Appearance | Screen::WindowsWorkspaces | Screen::Animations => Host::Appearance,
+            Screen::Wallpaper | Screen::NightLight | Screen::Idle | Screen::Sharing => {
+                Host::Desktop
+            }
+        }
+    }
+
+    /// Which of Appearance's tabs this page is, if it is one.
+    fn appearance_tab(self) -> Option<modules::appearance::Tab> {
+        use modules::appearance::Tab;
+        match self {
+            Screen::Appearance => Some(Tab::Theme),
+            Screen::WindowsWorkspaces => Some(Tab::Windows),
+            Screen::Animations => Some(Tab::Animations),
+            _ => None,
+        }
+    }
+
+    /// Which of Desktop's tabs this page is, if it is one.
+    fn desktop_tab(self) -> Option<modules::desktop::Tab> {
+        use modules::desktop::Tab;
+        match self {
+            Screen::Wallpaper => Some(Tab::Wallpaper),
+            Screen::NightLight => Some(Tab::NightLight),
+            Screen::Idle => Some(Tab::Idle),
+            Screen::Sharing => Some(Tab::ScreenSharing),
+            _ => None,
+        }
+    }
+}
+
+/// One of the modules the app hosts. Every per-module dispatch in the
+/// shell matches on this rather than on [`Screen`], so a page added over
+/// an existing module's tab needs no new arm anywhere but [`Screen`]'s
+/// own methods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Host {
+    Displays,
     WindowRules,
     Shortcuts,
     Input,
@@ -485,101 +597,50 @@ enum Screen {
     System,
 }
 
-impl Screen {
-    fn title(self) -> &'static str {
-        match self {
-            Screen::Monitors => "Monitors",
-            Screen::WindowRules => "Window Rules",
-            Screen::Shortcuts => "Shortcuts",
-            Screen::Input => "Input",
-            Screen::Network => "Network",
-            Screen::Bluetooth => "Bluetooth",
-            Screen::Power => "Power",
-            Screen::Tray => "Tray",
-            Screen::Appearance => "Appearance",
-            Screen::Desktop => "Desktop",
-            Screen::DefaultApps => "Default Applications",
-            Screen::Session => "Session",
-            Screen::System => "System",
-        }
-    }
-}
-
-impl Screen {
-    /// The mark beside this page in the sidebar. The page's, not its
-    /// module's: Desktop's four tabs are about to become four pages, and
-    /// each wants its own.
-    fn glyph(self) -> hyprforge_ui::glyph::Page {
-        use hyprforge_ui::glyph::Page;
-        match self {
-            Screen::Monitors => Page::Display,
-            Screen::WindowRules => Page::WindowRules,
-            Screen::Shortcuts => Page::Keybinds,
-            Screen::Input => Page::Keyboard,
-            Screen::Network => Page::Network,
-            Screen::Bluetooth => Page::Bluetooth,
-            Screen::Power => Page::Power,
-            Screen::Tray => Page::Tray,
-            Screen::Appearance => Page::Appearance,
-            Screen::Desktop => Page::Wallpaper,
-            Screen::DefaultApps => Page::Apps,
-            Screen::Session => Page::Session,
-            Screen::System => Page::Advanced,
-        }
-    }
-}
-
-/// A top-level sidebar grouping. Monitors and Window Rules share the
-/// "Displays" category (both are about how windows/outputs are arranged);
-/// Shortcuts gets its own category since keybindings are a different kind
-/// of setting entirely — later categories (Network, Bluetooth, ...) each
-/// get their own entry here too, rather than flattening everything into
-/// one nav list.
+/// A group of pages in the sidebar — the mockup's four.
 struct NavCategory {
     label: &'static str,
     screens: &'static [Screen],
 }
 
+/// The sidebar, in the mockup's grouping: the machine, what it connects
+/// to, the compositor, and the person using it.
+///
+/// Pages the mockup does not draw sit in the nearest group — Default apps
+/// with the machine, Tray and the desktop daemons' pages with the person.
+/// The mockup's Sound, Users and Notifications have no page here: an
+/// entry that opened onto nothing would be a promise the app does not
+/// keep.
 const NAV: &[NavCategory] = &[
     NavCategory {
-        label: "Displays",
-        screens: &[Screen::Monitors, Screen::WindowRules],
+        label: "System",
+        screens: &[Screen::Monitors, Screen::Power, Screen::Input, Screen::DefaultApps],
     },
     NavCategory {
-        label: "Shortcuts",
-        screens: &[Screen::Shortcuts],
+        label: "Connectivity",
+        screens: &[Screen::Network, Screen::Bluetooth],
     },
     NavCategory {
-        label: "Input",
-        screens: &[Screen::Input],
+        label: "Hyprland",
+        screens: &[
+            Screen::WindowsWorkspaces,
+            Screen::Shortcuts,
+            Screen::Animations,
+            Screen::WindowRules,
+            Screen::Idle,
+            Screen::Session,
+            Screen::System,
+        ],
     },
     NavCategory {
-        label: "Network",
-        screens: &[Screen::Network],
-    },
-    NavCategory {
-        label: "Bluetooth",
-        screens: &[Screen::Bluetooth],
-    },
-    NavCategory {
-        label: "Power",
-        screens: &[Screen::Power],
-    },
-    NavCategory {
-        label: "Tray",
-        screens: &[Screen::Tray],
-    },
-    NavCategory {
-        label: "Appearance",
-        screens: &[Screen::Appearance, Screen::Desktop],
-    },
-    NavCategory {
-        label: "Applications",
-        screens: &[Screen::DefaultApps],
-    },
-    NavCategory {
-        label: "Session",
-        screens: &[Screen::Session, Screen::System],
+        label: "Personal",
+        screens: &[
+            Screen::Appearance,
+            Screen::Wallpaper,
+            Screen::NightLight,
+            Screen::Sharing,
+            Screen::Tray,
+        ],
     },
 ];
 
@@ -657,17 +718,22 @@ impl App {
             std::sync::Arc::new(LazyPowerProfilesDaemonBackend::new()),
         );
         let (tray, tray_task) = TrayModule::new();
-        let (appearance, appearance_task) = AppearanceModule::new();
+        let screen = INITIAL_SCREEN.get().copied().unwrap_or(Screen::Monitors);
+        let (mut appearance, appearance_task) = AppearanceModule::new();
         let (mut desktop, desktop_task) = DesktopModule::new();
-        if let Some(tab) = INITIAL_DESKTOP_TAB.get() {
-            desktop.open_on(*tab);
+        // The same as `open_tabs`, before there is an `App` to call it on.
+        if let Some(tab) = screen.appearance_tab() {
+            let _ = appearance.update(modules::appearance::Message::TabSelected(tab));
+        }
+        if let Some(tab) = screen.desktop_tab() {
+            let _ = desktop.update(modules::desktop::Message::TabSelected(tab));
         }
         let (default_apps, default_apps_task) = DefaultAppsModule::new();
         let (session, session_task) = SessionModule::new();
         let (system, system_task) = SystemModule::new();
         (
             App {
-                screen: INITIAL_SCREEN.get().copied().unwrap_or(Screen::Monitors),
+                screen,
                 displays,
                 window_rules,
                 shortcuts,
@@ -753,6 +819,7 @@ impl App {
         match message {
             Message::Navigate(screen) => {
                 self.screen = screen;
+                self.open_tabs();
                 // Going somewhere closes the palette, whether it was the
                 // palette that sent you or the sidebar.
                 self.search_query.clear();
@@ -764,6 +831,7 @@ impl App {
             },
             Message::Reveal(screen, messages) => {
                 self.screen = screen;
+                self.open_tabs();
                 self.search_query.clear();
                 let mut tasks = Vec::with_capacity(messages.len());
                 for message in messages {
@@ -811,41 +879,41 @@ impl App {
                     ])
                 }
             }
-            Message::RefreshActive => match self.screen {
-                Screen::Monitors => self
+            Message::RefreshActive => match self.screen.host() {
+                Host::Displays => self
                     .displays
                     .update(modules::displays::Message::Refresh)
                     .map(Message::Displays),
                 // Window Rules and Shortcuts have no external state to
                 // refresh — each is the sole writer of its own TOML, so
                 // it's always already current.
-                Screen::WindowRules => Task::none(),
-                Screen::Shortcuts => Task::none(),
-                Screen::Input => Task::none(),
-                Screen::Network => self
+                Host::WindowRules => Task::none(),
+                Host::Shortcuts => Task::none(),
+                Host::Input => Task::none(),
+                Host::Network => self
                     .network
                     .update(modules::network::Message::Refresh)
                     .map(Message::Network),
-                Screen::Bluetooth => self
+                Host::Bluetooth => self
                     .bluetooth
                     .update(modules::bluetooth::Message::Refresh)
                     .map(Message::Bluetooth),
-                Screen::Power => {
+                Host::Power => {
                     self.power.update(modules::power::Message::Refresh).map(Message::Power)
                 }
-                Screen::Tray => {
+                Host::Tray => {
                     self.tray.update(modules::tray::Message::Refresh).map(Message::Tray)
                 }
                 // An application may have been installed since this
                 // screen was last looked at.
-                Screen::DefaultApps => self
+                Host::DefaultApps => self
                     .default_apps
                     .update(modules::default_apps::Message::Refresh)
                     .map(Message::DefaultApps),
-                Screen::Appearance => Task::none(),
-                Screen::Desktop => Task::none(),
-                Screen::Session => Task::none(),
-                Screen::System => Task::none(),
+                Host::Appearance => Task::none(),
+                Host::Desktop => Task::none(),
+                Host::Session => Task::none(),
+                Host::System => Task::none(),
             },
             Message::Displays(msg) => {
                 let task = self.displays.update(msg).map(Message::Displays);
@@ -896,11 +964,9 @@ impl App {
                     // request that somehow named nothing real still just
                     // falls through to "focus only" rather than panicking
                     // or navigating nowhere.
-                    if let Some((screen, tab)) = screen_from_cli(&name) {
+                    if let Some(screen) = screen_from_cli(&name) {
                         self.screen = screen;
-                        if let Some(tab) = tab {
-                            self.desktop.open_on(tab);
-                        }
+                        self.open_tabs();
                     }
                 }
                 Task::perform(focus_self(), |()| Message::Noop)
@@ -962,81 +1028,98 @@ impl App {
 
     /// This page's mono subtitle, from its module.
     fn subtitle_for(&self, screen: Screen) -> Option<String> {
-        match screen {
-            Screen::Monitors => self.displays.subtitle(),
-            Screen::WindowRules => self.window_rules.subtitle(),
-            Screen::Shortcuts => self.shortcuts.subtitle(),
-            Screen::Input => self.input.subtitle(),
-            Screen::Network => self.network.subtitle(),
-            Screen::Bluetooth => self.bluetooth.subtitle(),
-            Screen::Power => self.power.subtitle(),
-            Screen::Tray => self.tray.subtitle(),
-            Screen::DefaultApps => self.default_apps.subtitle(),
-            Screen::Appearance => self.appearance.subtitle(),
-            Screen::Desktop => self.desktop.subtitle(),
-            Screen::Session => self.session.subtitle(),
-            Screen::System => self.system.subtitle(),
+        match screen.host() {
+            Host::Displays => self.displays.subtitle(),
+            Host::WindowRules => self.window_rules.subtitle(),
+            Host::Shortcuts => self.shortcuts.subtitle(),
+            Host::Input => self.input.subtitle(),
+            Host::Network => self.network.subtitle(),
+            Host::Bluetooth => self.bluetooth.subtitle(),
+            Host::Power => self.power.subtitle(),
+            Host::Tray => self.tray.subtitle(),
+            Host::DefaultApps => self.default_apps.subtitle(),
+            Host::Appearance => self.appearance.subtitle(),
+            Host::Desktop => self.desktop.subtitle(),
+            Host::Session => self.session.subtitle(),
+            Host::System => self.system.subtitle(),
         }
     }
 
     /// This page's sidebar badge, from its module.
     fn badge_for(&self, screen: Screen) -> Option<NavBadge> {
-        match screen {
-            Screen::Monitors => self.displays.nav_badge(),
-            Screen::WindowRules => self.window_rules.nav_badge(),
-            Screen::Shortcuts => self.shortcuts.nav_badge(),
-            Screen::Input => self.input.nav_badge(),
-            Screen::Network => self.network.nav_badge(),
-            Screen::Bluetooth => self.bluetooth.nav_badge(),
-            Screen::Power => self.power.nav_badge(),
-            Screen::Tray => self.tray.nav_badge(),
-            Screen::DefaultApps => self.default_apps.nav_badge(),
-            Screen::Appearance => self.appearance.nav_badge(),
-            Screen::Desktop => self.desktop.nav_badge(),
-            Screen::Session => self.session.nav_badge(),
-            Screen::System => self.system.nav_badge(),
+        match screen.host() {
+            Host::Displays => self.displays.nav_badge(),
+            Host::WindowRules => self.window_rules.nav_badge(),
+            Host::Shortcuts => self.shortcuts.nav_badge(),
+            Host::Input => self.input.nav_badge(),
+            Host::Network => self.network.nav_badge(),
+            Host::Bluetooth => self.bluetooth.nav_badge(),
+            Host::Power => self.power.nav_badge(),
+            Host::Tray => self.tray.nav_badge(),
+            Host::DefaultApps => self.default_apps.nav_badge(),
+            Host::Appearance => self.appearance.nav_badge(),
+            Host::Desktop => self.desktop.nav_badge(),
+            Host::Session => self.session.nav_badge(),
+            Host::System => self.system.nav_badge(),
         }
     }
 
     /// The active page's whole-page buttons, mapped into the app's messages.
     fn header_actions(&self, scale: FontScale) -> Option<Element<'_, Message>> {
-        match self.screen {
-            Screen::Monitors => self.displays.header_actions(scale).map(|e| e.map(Message::Displays)),
-            Screen::WindowRules => {
+        match self.screen.host() {
+            Host::Displays => self.displays.header_actions(scale).map(|e| e.map(Message::Displays)),
+            Host::WindowRules => {
                 self.window_rules.header_actions(scale).map(|e| e.map(Message::WindowRules))
             }
-            Screen::Shortcuts => self.shortcuts.header_actions(scale).map(|e| e.map(Message::Shortcuts)),
-            Screen::Input => self.input.header_actions(scale).map(|e| e.map(Message::Input)),
-            Screen::Network => self.network.header_actions(scale).map(|e| e.map(Message::Network)),
-            Screen::Bluetooth => self.bluetooth.header_actions(scale).map(|e| e.map(Message::Bluetooth)),
-            Screen::Power => self.power.header_actions(scale).map(|e| e.map(Message::Power)),
-            Screen::Tray => self.tray.header_actions(scale).map(|e| e.map(Message::Tray)),
-            Screen::DefaultApps => {
+            Host::Shortcuts => self.shortcuts.header_actions(scale).map(|e| e.map(Message::Shortcuts)),
+            Host::Input => self.input.header_actions(scale).map(|e| e.map(Message::Input)),
+            Host::Network => self.network.header_actions(scale).map(|e| e.map(Message::Network)),
+            Host::Bluetooth => self.bluetooth.header_actions(scale).map(|e| e.map(Message::Bluetooth)),
+            Host::Power => self.power.header_actions(scale).map(|e| e.map(Message::Power)),
+            Host::Tray => self.tray.header_actions(scale).map(|e| e.map(Message::Tray)),
+            Host::DefaultApps => {
                 self.default_apps.header_actions(scale).map(|e| e.map(Message::DefaultApps))
             }
-            Screen::Appearance => self.appearance.header_actions(scale).map(|e| e.map(Message::Appearance)),
-            Screen::Desktop => self.desktop.header_actions(scale).map(|e| e.map(Message::Desktop)),
-            Screen::Session => self.session.header_actions(scale).map(|e| e.map(Message::Session)),
-            Screen::System => self.system.header_actions(scale).map(|e| e.map(Message::System)),
+            Host::Appearance => self.appearance.header_actions(scale).map(|e| e.map(Message::Appearance)),
+            Host::Desktop => self.desktop.header_actions(scale).map(|e| e.map(Message::Desktop)),
+            Host::Session => self.session.header_actions(scale).map(|e| e.map(Message::Session)),
+            Host::System => self.system.header_actions(scale).map(|e| e.map(Message::System)),
         }
     }
 
     /// The active page's unapplied changes, mapped into the app's messages.
     fn pending(&self) -> Option<Pending<Message>> {
-        match self.screen {
-            Screen::Monitors => self.displays.pending().map(|p| p.map(Message::Displays)),
-            Screen::WindowRules => self.window_rules.pending().map(|p| p.map(Message::WindowRules)),
-            Screen::Shortcuts => self.shortcuts.pending().map(|p| p.map(Message::Shortcuts)),
-            Screen::Input => self.input.pending().map(|p| p.map(Message::Input)),
-            Screen::Network => self.network.pending().map(|p| p.map(Message::Network)),
-            Screen::Bluetooth => self.bluetooth.pending().map(|p| p.map(Message::Bluetooth)),
-            Screen::Power => self.power.pending().map(|p| p.map(Message::Power)),
-            Screen::Tray => self.tray.pending().map(|p| p.map(Message::Tray)),
-            Screen::DefaultApps => self.default_apps.pending().map(|p| p.map(Message::DefaultApps)),
-            Screen::Appearance => self.appearance.pending().map(|p| p.map(Message::Appearance)),
-            Screen::Desktop => self.desktop.pending().map(|p| p.map(Message::Desktop)),
-            Screen::Session => self.session.pending().map(|p| p.map(Message::Session)),
-            Screen::System => self.system.pending().map(|p| p.map(Message::System)),
+        match self.screen.host() {
+            Host::Displays => self.displays.pending().map(|p| p.map(Message::Displays)),
+            Host::WindowRules => self.window_rules.pending().map(|p| p.map(Message::WindowRules)),
+            Host::Shortcuts => self.shortcuts.pending().map(|p| p.map(Message::Shortcuts)),
+            Host::Input => self.input.pending().map(|p| p.map(Message::Input)),
+            Host::Network => self.network.pending().map(|p| p.map(Message::Network)),
+            Host::Bluetooth => self.bluetooth.pending().map(|p| p.map(Message::Bluetooth)),
+            Host::Power => self.power.pending().map(|p| p.map(Message::Power)),
+            Host::Tray => self.tray.pending().map(|p| p.map(Message::Tray)),
+            Host::DefaultApps => self.default_apps.pending().map(|p| p.map(Message::DefaultApps)),
+            Host::Appearance => self.appearance.pending().map(|p| p.map(Message::Appearance)),
+            Host::Desktop => self.desktop.pending().map(|p| p.map(Message::Desktop)),
+            Host::Session => self.session.pending().map(|p| p.map(Message::Session)),
+            Host::System => self.system.pending().map(|p| p.map(Message::System)),
+        }
+    }
+
+    /// Points Appearance and Desktop at the tab the current page is.
+    ///
+    /// Called wherever the page changes. Their tabs are pages of their
+    /// own now, and the module still draws whichever tab it was last
+    /// told — so a page that forgot to say which would show its sibling.
+    fn open_tabs(&mut self) {
+        // Through the modules' own `TabSelected`, which only sets the tab
+        // and returns no task — the same message their tab rows sent
+        // before the tabs became pages.
+        if let Some(tab) = self.screen.appearance_tab() {
+            let _ = self.appearance.update(modules::appearance::Message::TabSelected(tab));
+        }
+        if let Some(tab) = self.screen.desktop_tab() {
+            let _ = self.desktop.update(modules::desktop::Message::TabSelected(tab));
         }
     }
 
@@ -1052,7 +1135,7 @@ impl App {
                 .search_entries()
                 .into_iter()
                 .map(|e| e.map(Message::Appearance))
-                .map(tag(Screen::Appearance)),
+                .map(tag(Screen::WindowsWorkspaces)),
         );
         all.extend(
             self.system.search_entries().into_iter().map(|e| e.map(Message::System)).map(tag(Screen::System)),
@@ -1225,20 +1308,20 @@ impl App {
         let header = self.header_bar(pending.is_some(), scale);
         let sidebar = self.sidebar(scale);
 
-        let content: Element<'_, Message> = match self.screen {
-            Screen::Monitors => self.displays.view(scale).map(Message::Displays),
-            Screen::WindowRules => self.window_rules.view(scale).map(Message::WindowRules),
-            Screen::Shortcuts => self.shortcuts.view(scale).map(Message::Shortcuts),
-            Screen::Input => self.input.view(scale).map(Message::Input),
-            Screen::Network => self.network.view(scale).map(Message::Network),
-            Screen::Bluetooth => self.bluetooth.view(scale).map(Message::Bluetooth),
-            Screen::Power => self.power.view(scale).map(Message::Power),
-            Screen::Tray => self.tray.view(scale).map(Message::Tray),
-            Screen::DefaultApps => self.default_apps.view(scale).map(Message::DefaultApps),
-            Screen::Appearance => self.appearance.view(scale).map(Message::Appearance),
-            Screen::Desktop => self.desktop.view(scale).map(Message::Desktop),
-            Screen::Session => self.session.view(scale).map(Message::Session),
-            Screen::System => self.system.view(scale).map(Message::System),
+        let content: Element<'_, Message> = match self.screen.host() {
+            Host::Displays => self.displays.view(scale).map(Message::Displays),
+            Host::WindowRules => self.window_rules.view(scale).map(Message::WindowRules),
+            Host::Shortcuts => self.shortcuts.view(scale).map(Message::Shortcuts),
+            Host::Input => self.input.view(scale).map(Message::Input),
+            Host::Network => self.network.view(scale).map(Message::Network),
+            Host::Bluetooth => self.bluetooth.view(scale).map(Message::Bluetooth),
+            Host::Power => self.power.view(scale).map(Message::Power),
+            Host::Tray => self.tray.view(scale).map(Message::Tray),
+            Host::DefaultApps => self.default_apps.view(scale).map(Message::DefaultApps),
+            Host::Appearance => self.appearance.view(scale).map(Message::Appearance),
+            Host::Desktop => self.desktop.view(scale).map(Message::Desktop),
+            Host::Session => self.session.view(scale).map(Message::Session),
+            Host::System => self.system.view(scale).map(Message::System),
         };
 
         // Title row: the page's name and its subtitle, with whatever acts
@@ -1529,52 +1612,55 @@ fn ipc_stream() -> impl iced::futures::Stream<Item = Message> {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
-    use modules::desktop::Tab;
 
-    /// Every tray icon opens the page its own setting is on. The two
-    /// that live on a tab are the reason `--screen` can name one: before
-    /// this, clicking night light landed on Wallpaper, and clicking keep
-    /// awake did nothing at all because it had no mapping.
+    /// Every tray icon opens the page its own setting is on. Night light
+    /// and keep-awake used to be the reason `--screen` could name a tab:
+    /// before that, clicking night light landed on Wallpaper, and keep
+    /// awake did nothing at all. They are pages of their own now, and
+    /// the names have to keep landing on them.
     #[test]
     fn each_tray_icon_opens_the_page_carrying_its_own_setting() {
-        for (icon, expected_screen, expected_tab) in [
-            ("network", Screen::Network, None),
-            ("bluetooth", Screen::Bluetooth, None),
-            ("night-light", Screen::Desktop, Some(Tab::NightLight)),
-            ("idle", Screen::Desktop, Some(Tab::Idle)),
+        for (icon, expected) in [
+            ("network", Screen::Network),
+            ("bluetooth", Screen::Bluetooth),
+            ("night-light", Screen::NightLight),
+            ("idle", Screen::Idle),
+            ("keep-awake", Screen::Idle),
+            ("power", Screen::Power),
+            ("tray", Screen::Tray),
         ] {
-            assert_eq!(
-                screen_from_cli(icon),
-                Some((expected_screen, expected_tab)),
-                "{icon} does not open where its setting lives"
-            );
+            assert_eq!(screen_from_cli(icon), Some(expected), "{icon} does not open where its setting lives");
         }
     }
 
-    /// Naming the screen still works and leaves the tab alone, so
-    /// `--screen desktop` opens wherever that screen opens.
+    /// Every name `--screen` accepted before the sidebar was regrouped
+    /// still opens a page — the one its setting now lives on. A desktop
+    /// entry, a tray build or a script written against the old names
+    /// must not start failing because the pages moved.
     #[test]
-    fn naming_a_screen_rather_than_a_tab_does_not_choose_one() {
-        assert_eq!(screen_from_cli("desktop"), Some((Screen::Desktop, None)));
-    }
-
-    /// `--screen power` is the name `hyprforge-trayd`'s keep-awake menu is
-    /// meant to link to next, replacing its `--screen idle` stand-in — see
-    /// the module doc comment on `modules::power`.
-    #[test]
-    fn screen_power_opens_the_power_screen() {
-        assert_eq!(screen_from_cli("power"), Some((Screen::Power, None)));
-    }
-
-    /// `--screen tray` is the Tray screen's own name — for hand deep-linking
-    /// and for `hyprforge-settings --screen tray` from a desktop entry.
-    /// Nothing currently sends this from `hyprforge-trayd`'s own menus
-    /// (each icon's settings row still goes to the screen carrying that
-    /// icon's own setting — Network, Bluetooth, or Power), so this is
-    /// reachable only by asking for the Tray screen by name.
-    #[test]
-    fn screen_tray_opens_the_tray_screen() {
-        assert_eq!(screen_from_cli("tray"), Some((Screen::Tray, None)));
+    fn every_old_screen_name_still_opens_a_screen() {
+        for (old, expected) in [
+            ("monitors", Screen::Monitors),
+            ("window-rules", Screen::WindowRules),
+            ("shortcuts", Screen::Shortcuts),
+            ("input", Screen::Input),
+            ("network", Screen::Network),
+            ("bluetooth", Screen::Bluetooth),
+            ("power", Screen::Power),
+            ("tray", Screen::Tray),
+            ("appearance", Screen::Appearance),
+            // Desktop opened on its first tab, Wallpaper.
+            ("desktop", Screen::Wallpaper),
+            ("default-apps", Screen::DefaultApps),
+            ("wallpaper", Screen::Wallpaper),
+            ("night-light", Screen::NightLight),
+            ("idle", Screen::Idle),
+            ("screen-sharing", Screen::Sharing),
+            ("session", Screen::Session),
+            ("system", Screen::System),
+        ] {
+            assert_eq!(screen_from_cli(old), Some(expected), "--screen {old}");
+        }
     }
 
     /// A name in the help text that the parser rejects is a promise the
@@ -1582,11 +1668,43 @@ mod cli_tests {
     #[test]
     fn every_name_the_usage_message_lists_actually_parses() {
         for name in SCREEN_NAMES {
+            assert!(screen_from_cli(name).is_some(), "{name} is offered in --help but is not accepted");
+        }
+    }
+
+    /// Every page in the sidebar can be opened by name, or it could not be
+    /// screenshotted — and that is how every page here gets checked.
+    #[test]
+    fn every_sidebar_page_has_a_name_that_opens_it() {
+        for screen in NAV.iter().flat_map(|c| c.screens) {
             assert!(
-                screen_from_cli(name).is_some(),
-                "{name} is offered in --help but is not accepted"
+                SCREEN_NAMES.iter().any(|n| screen_from_cli(n) == Some(*screen)),
+                "{screen:?} has no --screen name"
             );
         }
+    }
+
+    /// A page that shares a module with others must say which tab it is,
+    /// or it draws whichever tab that module last showed.
+    #[test]
+    fn every_page_over_a_shared_module_names_its_tab() {
+        for screen in NAV.iter().flat_map(|c| c.screens) {
+            match screen.host() {
+                Host::Appearance => assert!(screen.appearance_tab().is_some(), "{screen:?}"),
+                Host::Desktop => assert!(screen.desktop_tab().is_some(), "{screen:?}"),
+                _ => {}
+            }
+        }
+    }
+
+    /// Every page appears in the sidebar exactly once.
+    #[test]
+    fn every_page_is_in_the_sidebar_once() {
+        let listed: Vec<Screen> = NAV.iter().flat_map(|c| c.screens.iter().copied()).collect();
+        for (i, a) in listed.iter().enumerate() {
+            assert!(!listed[i + 1..].contains(a), "{a:?} is listed twice");
+        }
+        assert_eq!(listed.len(), 18, "a page was added or dropped without updating this count");
     }
 
     #[test]

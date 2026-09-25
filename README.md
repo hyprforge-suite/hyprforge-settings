@@ -1,12 +1,20 @@
 # hyprforge-settings
 
-The Settings app for Hyprforge — an [iced](https://iced.rs) GUI over ten
-screens: Monitors, Window Rules, Shortcuts, Input, Network, Bluetooth,
-Appearance, Desktop, Session and System (`src/main.rs`'s `Screen` enum).
-Each screen is a `SettingsModule` (`src/module.rs`) hosted in the same
-shell, modeled directly on iced's own `update`/`view` split so a screen
-feels like a miniature iced application rather than a bespoke plugin
-API — the modules themselves live under `src/modules/`.
+The Settings app for Hyprforge — an [iced](https://iced.rs) GUI of
+eighteen pages in four sidebar groups: System (Displays, Power & battery,
+Keyboard & mouse, Default apps), Connectivity (Network, Bluetooth),
+Hyprland (Windows & workspaces, Keybinds, Animations, Window rules, Idle &
+lock, Session, Advanced) and Personal (Appearance, Wallpaper, Night light,
+Screen sharing, Tray) — `src/main.rs`'s `Screen` enum and `NAV`. A search
+palette in the header finds any page, setting or config key.
+
+The pages are drawn by thirteen modules, each a `SettingsModule`
+(`src/module.rs`) under `src/modules/`, modeled directly on iced's own
+`update`/`view` split so a module feels like a miniature iced application
+rather than a bespoke plugin API. Some modules back several pages —
+Appearance's and Desktop's tabs are pages of their own — and the shell,
+not the module, draws every page's title, sidebar entry and
+pending-changes bar.
 
 Part of [Hyprforge](https://github.com/adamrpostjr/hyprforge), a suite of
 native Hyprland desktop apps.
@@ -60,6 +68,19 @@ the same by hand: run the binary itself with `XDG_CONFIG_HOME` pointed
 at a scratch directory, not your home directory, whenever you are
 exercising it manually rather than through `cargo test`.
 
+Give a copy run by hand its own `XDG_RUNTIME_DIR` too, if Settings is
+already open in your session. It is single-instance through a lock and
+a control socket in that directory, so a second copy that finds them
+does not open a window at all — it hands its `--screen` to the running
+one and exits 0, and the page you were testing turns up in your own
+window instead. Keep that directory's path short: a Unix socket path is
+limited to 108 bytes, and a long one silently truncates the path
+`hyprctl` connects to, so every page that asks Hyprland something reports
+that it could not. `/run/user/$UID/<name>` fits.
+
+`--screen <name>` opens a given page and `--search <text>` opens with the
+palette showing, which is how a page is reached for a screenshot.
+
 ## It is where the suite's shared look comes from
 
 The Appearance screen resolves one `hyprforge_look::Theme` and
@@ -89,7 +110,7 @@ see the upstream CLAUDE.md's "Never add a colour constant to an app."
 
 `.github/workflows/ci.yml` builds the crate, runs clippy with warnings
 denied, and runs `cargo test`. There are no `#[ignore]`d live tests
-here — every one of this crate's 285 tests needs nothing but this
+here — every one of this crate's 359 tests needs nothing but this
 process, driving each module against a temp config directory and, where
 a screen needs one, a mock D-Bus backend
 (`hyprforge_network::backend::mock::MockBackend`,

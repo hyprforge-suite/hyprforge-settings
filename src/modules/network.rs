@@ -291,8 +291,29 @@ impl<B: NetworkBackend + 'static> NetworkModule<B> {
 impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
     type Message = Message;
 
-    fn icon(&self) -> &'static str {
-        "\u{1F4F6}" // 📶
+    fn subtitle(&self) -> Option<String> {
+        Some("NetworkManager".into())
+    }
+
+    fn header_actions(&self, _scale: FontScale) -> Option<Element<'_, Message>> {
+        Some(
+            row![
+                secondary_button(if self.scanning { "Scanning…" } else { "Scan" })
+                    .on_press_maybe((!self.scanning).then_some(Message::ScanPressed)),
+                secondary_button("Refresh").on_press(Message::Refresh),
+            ]
+            .spacing(spacing::SM)
+            .into(),
+        )
+    }
+
+    /// A dot while on a wireless network, so the sidebar says "online"
+    /// from any page.
+    fn nav_badge(&self) -> Option<crate::module::NavBadge> {
+        self.status
+            .as_ref()
+            .and_then(|s| s.connected_to.as_ref())
+            .map(|_| crate::module::NavBadge::Dot(hyprforge_ui::widgets::Tint::Success))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -569,15 +590,7 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
     }
 
     fn view(&self, scale: FontScale) -> Element<'_, Message> {
-        let mut content = column![row![
-            scaled_text("Network", 22.0, scale).width(Length::Fill),
-            secondary_button(if self.scanning { "Scanning…" } else { "Scan" })
-                .on_press_maybe((!self.scanning).then_some(Message::ScanPressed)),
-            secondary_button("Refresh").on_press(Message::Refresh),
-        ]
-        .spacing(spacing::SM)
-        .align_y(Alignment::Center)]
-        .spacing(spacing::LG);
+        let mut content = column![].spacing(spacing::LG);
 
         if let Some(msg) = &self.error {
             content = content.push(scaled_text(msg.clone(), 13.0, scale).color(theme::warning()));
@@ -640,7 +653,9 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
         // section read as switching a Wi-Fi-only icon.
         content = content.push(section("Tray", scale, self.tray_row(scale)));
 
-        content.into()
+        // Padded like every other page, so its first section sits a
+        // gap below the title the shell draws, not flush against it.
+        iced::widget::container(content).padding(spacing::LG).width(iced::Length::Fill).into()
     }
 
     fn subscription(&self) -> Subscription<Message> {

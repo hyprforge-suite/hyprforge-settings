@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use hyprforge_core::hlconfig::import::{Discovered, Live};
 use hyprforge_core::hlconfig::{Invalid, Settings, Value};
 use hyprforge_core::lua_setup::{HyprConfig, SetupPlan};
-use iced::widget::{checkbox, column, container, row, scrollable, text_input};
+use iced::widget::{checkbox, column, container, row, text_input};
 use iced::{Element, Length, Task};
 use std::collections::BTreeMap;
 
@@ -101,7 +101,6 @@ pub(crate) fn matches_filter(filter: &str, setting: &Setting) -> bool {
 
 /// Everything a catalogue-backed screen needs that isn't the screen.
 pub trait Catalogued: 'static {
-    const ICON: &'static str;
     /// Named in error and status messages: "your {SUBJECT} couldn't be
     /// read".
     const SUBJECT: &'static str;
@@ -369,10 +368,6 @@ impl<M: Catalogued> SettingsModule for CatalogScreen<M> {
     type Message = Message;
 
 
-    fn icon(&self) -> &'static str {
-        M::ICON
-    }
-
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Set(key, value) => {
@@ -627,10 +622,9 @@ impl<M: Catalogued> SettingsModule for CatalogScreen<M> {
             content = content.push(meta_text(*why, 12.0, scale));
         }
 
-        scrollable(container(content).padding(spacing::LG))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        // No scrollable of its own: the shell owns the page's one scroll
+        // area, and a second one inside it scrolled the page twice.
+        container(content).padding(spacing::LG).width(Length::Fill).into()
     }
 }
 
@@ -723,10 +717,8 @@ impl<M: Catalogued> CatalogScreen<M> {
                 .into()
             }
         };
-        scrollable(container(section("Import from Hyprland", scale, body)).padding(spacing::LG))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        // The shell's scroll area holds this too; see `view`.
+        container(section("Import from Hyprland", scale, body)).padding(spacing::LG).into()
     }
 }
 

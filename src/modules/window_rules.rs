@@ -890,10 +890,18 @@ impl WindowRulesModule {
 impl SettingsModule for WindowRulesModule {
     type Message = Message;
 
-
-    fn icon(&self) -> &'static str {
-        "\u{1FA9F}"
+    fn subtitle(&self) -> Option<String> {
+        Some(match self.rules.len() {
+            1 => "1 rule".into(),
+            n => format!("{n} rules"),
+        })
     }
+
+    /// How many rules there are, as in the mockup's `Window rules  14`.
+    fn nav_badge(&self) -> Option<crate::module::NavBadge> {
+        (!self.rules.is_empty()).then(|| crate::module::NavBadge::Text(self.rules.len().to_string()))
+    }
+
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -1234,7 +1242,7 @@ impl SettingsModule for WindowRulesModule {
             return self.import_review_view(state, scale);
         }
 
-        let mut content = column![scaled_text("Window Rules", 22.0, scale)].spacing(spacing::LG);
+        let mut content = column![].spacing(spacing::LG);
 
         if let Some(notice) = self.setup_notice(scale) {
             content = content.push(notice);

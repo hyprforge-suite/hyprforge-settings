@@ -16,7 +16,6 @@ pub type SystemModule = CatalogScreen<System>;
 pub struct System;
 
 impl Catalogued for System {
-    const ICON: &'static str = "\u{1F527}";
     const SUBJECT: &'static str = "system settings";
     const STORE: &'static str = "system.toml";
 

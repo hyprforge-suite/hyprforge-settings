@@ -34,7 +34,7 @@ use hyprforge_ui::widgets::{
 use crate::modules::setup_notice::setup_notice;
 use crate::module::SettingsModule;
 use crate::modules::catalog_screen;
-use iced::widget::{checkbox, column, container, pick_list, row, scrollable, text_input};
+use iced::widget::{checkbox, column, container, pick_list, row, text_input};
 use iced::{Element, Length, Task};
 use std::collections::BTreeMap;
 
@@ -400,10 +400,6 @@ impl SettingsModule for AppearanceModule {
     type Message = Message;
 
 
-    fn icon(&self) -> &'static str {
-        "🎨"
-    }
-
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::TabSelected(tab) => {
@@ -755,10 +751,9 @@ impl SettingsModule for AppearanceModule {
             Tab::Animations => content.push(self.animations_view(scale)),
         };
 
-        scrollable(container(content).padding(spacing::LG))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        // No scrollable of its own: the shell owns the page's one scroll
+        // area, and a second one inside it scrolled the page twice.
+        container(content).padding(spacing::LG).width(Length::Fill).into()
     }
 }
 
@@ -1182,10 +1177,8 @@ impl AppearanceModule {
                 .into()
             }
         };
-        scrollable(container(section("Import from Hyprland", scale, body)).padding(spacing::LG))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        // The shell's scroll area holds this too; see `view`.
+        container(section("Import from Hyprland", scale, body)).padding(spacing::LG).into()
     }
 }
 

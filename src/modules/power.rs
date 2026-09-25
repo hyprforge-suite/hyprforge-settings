@@ -24,7 +24,7 @@ use hyprforge_power::{
 use hyprforge_ui::theme::{self, spacing, FontScale, BASE_TEXT_SIZE};
 use hyprforge_ui::widgets::{meta_text, primary_button, scaled_text, secondary_button, section};
 use iced::widget::{checkbox, column, row};
-use iced::{Alignment, Element, Length, Subscription, Task};
+use iced::{Alignment, Element, Subscription, Task};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -256,8 +256,12 @@ where
 {
     type Message = Message;
 
-    fn icon(&self) -> &'static str {
-        "\u{1F50B}" // 🔋
+    fn subtitle(&self) -> Option<String> {
+        Some("UPower · power-profiles-daemon".into())
+    }
+
+    fn header_actions(&self, _scale: FontScale) -> Option<Element<'_, Message>> {
+        Some(secondary_button("Refresh").on_press(Message::Refresh).into())
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -362,13 +366,7 @@ where
     }
 
     fn view(&self, scale: FontScale) -> Element<'_, Message> {
-        let mut content = column![row![
-            scaled_text("Power", 22.0, scale).width(Length::Fill),
-            secondary_button("Refresh").on_press(Message::Refresh),
-        ]
-        .spacing(spacing::SM)
-        .align_y(Alignment::Center)]
-        .spacing(spacing::LG);
+        let mut content = column![].spacing(spacing::LG);
 
         if let Some(msg) = &self.error {
             content = content.push(scaled_text(msg.clone(), 13.0, scale).color(theme::warning()));
@@ -378,7 +376,9 @@ where
         content = content.push(self.battery_section(scale));
         content = content.push(self.profile_section(scale));
 
-        content.into()
+        // Padded like every other page, so its first section sits a
+        // gap below the title the shell draws, not flush against it.
+        iced::widget::container(content).padding(spacing::LG).width(iced::Length::Fill).into()
     }
 
     fn subscription(&self) -> Subscription<Message> {

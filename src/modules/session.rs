@@ -24,7 +24,7 @@ use crate::modules::setting_rows::labelled;
 use hyprforge_session::storage::Session;
 use hyprforge_session::{autostart, environment, gestures, permissions};
 use hyprforge_session::setup::{HyprConfig, SetupPlan};
-use iced::widget::{checkbox, column, container, pick_list, row, scrollable, text_input};
+use iced::widget::{checkbox, column, container, pick_list, row, text_input};
 use iced::{Element, Length, Task};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -296,10 +296,6 @@ impl SettingsModule for SessionModule {
     type Message = Message;
 
 
-    fn icon(&self) -> &'static str {
-        "⚙"
-    }
-
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::TabSelected(tab) => {
@@ -540,10 +536,9 @@ impl SettingsModule for SessionModule {
             Tab::Permissions => self.permissions_view(scale),
         });
 
-        scrollable(container(content).padding(spacing::LG))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        // No scrollable of its own: the shell owns the page's one scroll
+        // area, and a second one inside it scrolled the page twice.
+        container(content).padding(spacing::LG).width(Length::Fill).into()
     }
 }
 

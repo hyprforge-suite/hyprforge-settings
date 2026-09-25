@@ -20,7 +20,6 @@ pub type InputModule = CatalogScreen<Input>;
 pub struct Input;
 
 impl Catalogued for Input {
-    const ICON: &'static str = "\u{2328}";
     const SUBJECT: &'static str = "input settings";
     const STORE: &'static str = "input.toml";
 

@@ -808,10 +808,13 @@ impl ShortcutsModule {
 impl SettingsModule for ShortcutsModule {
     type Message = Message;
 
-
-    fn icon(&self) -> &'static str {
-        "\u{2328}"
+    fn subtitle(&self) -> Option<String> {
+        Some(match self.shortcuts.len() {
+            1 => "1 bind".into(),
+            n => format!("{n} binds"),
+        })
     }
+
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -1146,7 +1149,7 @@ impl SettingsModule for ShortcutsModule {
             return self.import_review_view(state, scale);
         }
 
-        let mut content = column![scaled_text("Shortcuts", 22.0, scale)].spacing(spacing::LG);
+        let mut content = column![].spacing(spacing::LG);
 
         if let Some(notice) = self.setup_notice(scale) {
             content = content.push(notice);

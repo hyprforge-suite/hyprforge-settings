@@ -227,12 +227,21 @@ impl<B: BluetoothBackend + 'static> BluetoothModule<B> {
 impl<B: BluetoothBackend + 'static> SettingsModule for BluetoothModule<B> {
     type Message = Message;
 
-    fn icon(&self) -> &'static str {
-        // There is no standard Unicode Bluetooth glyph — the logo is a
-        // registered trademark symbol, not a codepoint — so this picks a
-        // color distinct from every other sidebar icon rather than reusing
-        // Network's 📶, which would read as the same screen twice.
-        "\u{1F535}" // 🔵
+    fn subtitle(&self) -> Option<String> {
+        Some("BlueZ".into())
+    }
+
+    fn header_actions(&self, _scale: FontScale) -> Option<Element<'_, Message>> {
+        Some(secondary_button("Refresh").on_press(Message::Refresh).into())
+    }
+
+    /// A dot while anything is connected — the one fact worth seeing from
+    /// another page, because it is the one that changes on its own.
+    fn nav_badge(&self) -> Option<crate::module::NavBadge> {
+        self.devices
+            .iter()
+            .any(|d| d.connected)
+            .then_some(crate::module::NavBadge::Dot(hyprforge_ui::widgets::Tint::Success))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -496,13 +505,7 @@ impl<B: BluetoothBackend + 'static> SettingsModule for BluetoothModule<B> {
     }
 
     fn view(&self, scale: FontScale) -> Element<'_, Message> {
-        let mut content = column![row![
-            scaled_text("Bluetooth", 22.0, scale).width(Length::Fill),
-            secondary_button("Refresh").on_press(Message::Refresh),
-        ]
-        .spacing(spacing::SM)
-        .align_y(Alignment::Center)]
-        .spacing(spacing::LG);
+        let mut content = column![].spacing(spacing::LG);
 
         if let Some(msg) = &self.error {
             content = content.push(scaled_text(msg.clone(), 13.0, scale).color(theme::warning()));
@@ -545,7 +548,9 @@ impl<B: BluetoothBackend + 'static> SettingsModule for BluetoothModule<B> {
             content = content.push(self.pairing_dialog(prompt, scale));
         }
 
-        content.into()
+        // Padded like every other page, so its first section sits a
+        // gap below the title the shell draws, not flush against it.
+        iced::widget::container(content).padding(spacing::LG).width(iced::Length::Fill).into()
     }
 
     fn subscription(&self) -> Subscription<Message> {

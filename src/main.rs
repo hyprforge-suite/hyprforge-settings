@@ -4,11 +4,15 @@ mod module;
 mod modules;
 mod singleton;
 
-use hyprforge_ui::theme::{app_theme, spacing, surface, FontScale, text_dim};
-use hyprforge_ui::widgets::{primary_button, scaled_text, secondary_button};
-use crate::module::SettingsModule;
+use hyprforge_ui::density;
+use hyprforge_ui::theme::{app_theme, spacing, surface, text, text_dim, FontScale};
+use hyprforge_ui::widgets::{
+    config_line, page_header, primary_button, scaled_text, search_field, secondary_button,
+    section_label, selectable_row_style, status_dot, Tint,
+};
+use crate::module::{NavBadge, SettingsModule};
 use iced::keyboard::{self, key, Key};
-use iced::widget::{column, container, operation, row, text_input, Id};
+use iced::widget::{column, container, operation, row, Id, Space};
 use iced::{window, Background, Element, Length, Size, Subscription, Task, Theme};
 use modules::appearance::AppearanceModule;
 use modules::bluetooth::{BluetoothModule, LazyBlueZBackend};
@@ -104,7 +108,21 @@ const SCREEN_NAMES: &[&str] = &[
 ];
 
 const SIDEBAR_WIDTH: f32 = 240.0;
+
+/// A sidebar page mark's box at 100%. The mark itself fills most of it;
+/// at the view marks' smaller size an outline beside a 13px label read
+/// as a speck.
+const NAV_MARK_BASE: f32 = 19.0;
 const CONTENT_MAX_WIDTH: f32 = 880.0;
+
+/// A page's content, capped at a readable width and centred in the
+/// pane, GNOME-style. Left-aligning a capped column in a very wide window
+/// dumps all the slack on one side, which reads as a broken layout;
+/// splitting it evenly reads as deliberate margin.
+fn centred(content: Element<'_, Message>) -> Element<'_, Message> {
+    let capped = container(content).max_width(CONTENT_MAX_WIDTH).width(Length::Fill);
+    container(capped).width(Length::Fill).center_x(Length::Fill).into()
+}
 
 /// This window's application id (X11 `WM_CLASS` / Wayland `app_id`).
 /// Without setting `platform_specific.application_id` explicitly, iced's
@@ -427,6 +445,30 @@ impl Screen {
             Screen::DefaultApps => "Default Applications",
             Screen::Session => "Session",
             Screen::System => "System",
+        }
+    }
+}
+
+impl Screen {
+    /// The mark beside this page in the sidebar. The page's, not its
+    /// module's: Desktop's four tabs are about to become four pages, and
+    /// each wants its own.
+    fn glyph(self) -> hyprforge_ui::glyph::Page {
+        use hyprforge_ui::glyph::Page;
+        match self {
+            Screen::Monitors => Page::Display,
+            Screen::WindowRules => Page::WindowRules,
+            Screen::Shortcuts => Page::Keybinds,
+            Screen::Input => Page::Keyboard,
+            Screen::Network => Page::Network,
+            Screen::Bluetooth => Page::Bluetooth,
+            Screen::Power => Page::Power,
+            Screen::Tray => Page::Tray,
+            Screen::Appearance => Page::Appearance,
+            Screen::Desktop => Page::Wallpaper,
+            Screen::DefaultApps => Page::Apps,
+            Screen::Session => Page::Session,
+            Screen::System => Page::Advanced,
         }
     }
 }
@@ -841,100 +883,79 @@ impl App {
         .into()
     }
 
+    /// This page's mono subtitle, from its module.
+    fn subtitle_for(&self, screen: Screen) -> Option<String> {
+        match screen {
+            Screen::Monitors => self.displays.subtitle(),
+            Screen::WindowRules => self.window_rules.subtitle(),
+            Screen::Shortcuts => self.shortcuts.subtitle(),
+            Screen::Input => self.input.subtitle(),
+            Screen::Network => self.network.subtitle(),
+            Screen::Bluetooth => self.bluetooth.subtitle(),
+            Screen::Power => self.power.subtitle(),
+            Screen::Tray => self.tray.subtitle(),
+            Screen::DefaultApps => self.default_apps.subtitle(),
+            Screen::Appearance => self.appearance.subtitle(),
+            Screen::Desktop => self.desktop.subtitle(),
+            Screen::Session => self.session.subtitle(),
+            Screen::System => self.system.subtitle(),
+        }
+    }
+
+    /// This page's sidebar badge, from its module.
+    fn badge_for(&self, screen: Screen) -> Option<NavBadge> {
+        match screen {
+            Screen::Monitors => self.displays.nav_badge(),
+            Screen::WindowRules => self.window_rules.nav_badge(),
+            Screen::Shortcuts => self.shortcuts.nav_badge(),
+            Screen::Input => self.input.nav_badge(),
+            Screen::Network => self.network.nav_badge(),
+            Screen::Bluetooth => self.bluetooth.nav_badge(),
+            Screen::Power => self.power.nav_badge(),
+            Screen::Tray => self.tray.nav_badge(),
+            Screen::DefaultApps => self.default_apps.nav_badge(),
+            Screen::Appearance => self.appearance.nav_badge(),
+            Screen::Desktop => self.desktop.nav_badge(),
+            Screen::Session => self.session.nav_badge(),
+            Screen::System => self.system.nav_badge(),
+        }
+    }
+
+    /// The active page's whole-page buttons, mapped into the app's messages.
+    fn header_actions(&self, scale: FontScale) -> Option<Element<'_, Message>> {
+        match self.screen {
+            Screen::Monitors => self.displays.header_actions(scale).map(|e| e.map(Message::Displays)),
+            Screen::WindowRules => {
+                self.window_rules.header_actions(scale).map(|e| e.map(Message::WindowRules))
+            }
+            Screen::Shortcuts => self.shortcuts.header_actions(scale).map(|e| e.map(Message::Shortcuts)),
+            Screen::Input => self.input.header_actions(scale).map(|e| e.map(Message::Input)),
+            Screen::Network => self.network.header_actions(scale).map(|e| e.map(Message::Network)),
+            Screen::Bluetooth => self.bluetooth.header_actions(scale).map(|e| e.map(Message::Bluetooth)),
+            Screen::Power => self.power.header_actions(scale).map(|e| e.map(Message::Power)),
+            Screen::Tray => self.tray.header_actions(scale).map(|e| e.map(Message::Tray)),
+            Screen::DefaultApps => {
+                self.default_apps.header_actions(scale).map(|e| e.map(Message::DefaultApps))
+            }
+            Screen::Appearance => self.appearance.header_actions(scale).map(|e| e.map(Message::Appearance)),
+            Screen::Desktop => self.desktop.header_actions(scale).map(|e| e.map(Message::Desktop)),
+            Screen::Session => self.session.header_actions(scale).map(|e| e.map(Message::Session)),
+            Screen::System => self.system.header_actions(scale).map(|e| e.map(Message::System)),
+        }
+    }
+
+    /// The main window: the mockup's `1b` shell.
+    ///
+    /// A header bar across the top holding the app's mark and the search
+    /// field; a grouped sidebar of drawn marks under it; and the page,
+    /// which is a header the shell draws — title, subtitle, whole-page
+    /// buttons — over the page's own body in the window's one scroll
+    /// area.
     fn settings_view(&self) -> Element<'_, Message> {
         let scale = self.font_scale;
 
-        let sidebar_button = |label: String, screen: Screen, active: bool| {
-            let btn = if active {
-                primary_button(label)
-            } else {
-                secondary_button(label)
-            };
-            btn.width(Length::Fill)
-                .padding([10, 12])
-                .on_press(Message::Navigate(screen))
-        };
-
-        let icon_for = |screen: Screen| match screen {
-            Screen::Monitors => self.displays.icon(),
-            Screen::WindowRules => self.window_rules.icon(),
-            Screen::Shortcuts => self.shortcuts.icon(),
-            Screen::Input => self.input.icon(),
-            Screen::Network => self.network.icon(),
-            Screen::Bluetooth => self.bluetooth.icon(),
-            Screen::Power => self.power.icon(),
-            Screen::Tray => self.tray.icon(),
-            Screen::DefaultApps => self.default_apps.icon(),
-            Screen::Appearance => self.appearance.icon(),
-            Screen::Desktop => self.desktop.icon(),
-            Screen::Session => self.session.icon(),
-            Screen::System => self.system.icon(),
-        };
-
-        let query = self.search_query.to_lowercase();
-        let mut nav = column![].spacing(spacing::MD);
-        let mut any_visible = false;
-        for category in NAV {
-            let visible_screens: Vec<Screen> = category
-                .screens
-                .iter()
-                .copied()
-                .filter(|s| query.is_empty() || s.title().to_lowercase().contains(&query))
-                .collect();
-            if visible_screens.is_empty() {
-                continue;
-            }
-            any_visible = true;
-
-            let mut sub_items = column![].spacing(spacing::XS);
-            for screen in visible_screens {
-                let label = format!("{}  {}", icon_for(screen), screen.title());
-                sub_items = sub_items.push(sidebar_button(label, screen, self.screen == screen));
-            }
-
-            // The category header is itself a button to its first/default
-            // sub-item, not just a static label — "Displays" takes you to
-            // Monitors the same way clicking "Monitors" does.
-            let header = iced::widget::button(
-                scaled_text(category.label.to_uppercase(), 11.0, scale).color(text_dim()),
-            )
-            .style(|_theme: &Theme, _status| iced::widget::button::Style::default())
-            .padding(0)
-            .on_press(Message::Navigate(category.screens[0]));
-
-            nav = nav.push(
-                column![
-                    header,
-                    container(sub_items).padding(iced::Padding {
-                        left: 4.0,
-                        ..iced::Padding::default()
-                    }),
-                ]
-                .spacing(spacing::XS),
-            );
-        }
-        if !any_visible {
-            nav = nav.push(scaled_text("No matches", 13.0, scale).color(text_dim()));
-        }
-
-        let sidebar = container(
-            column![
-                scaled_text("Hyprforge", 20.0, scale),
-                text_input("Search…", &self.search_query)
-                    .id(self.search_id.clone())
-                    .on_input(Message::SearchChanged)
-                    .padding(8),
-                nav,
-            ]
-            .spacing(spacing::MD)
-            .padding(spacing::MD)
-            .width(Length::Fixed(SIDEBAR_WIDTH)),
-        )
-        .height(Length::Fill)
-        .style(|_theme: &Theme| container::Style {
-            background: Some(Background::Color(surface::sidebar())),
-            ..container::Style::default()
-        });
+        let header = self.header_bar(scale);
+        let sidebar = self.sidebar(scale);
 
         let content: Element<'_, Message> = match self.screen {
             Screen::Monitors => self.displays.view(scale).map(Message::Displays),
@@ -951,32 +972,192 @@ impl App {
             Screen::Session => self.session.view(scale).map(Message::Session),
             Screen::System => self.system.view(scale).map(Message::System),
         };
+
+        // Title row: the page's name and its subtitle, with whatever acts
+        // on the whole page at the right. Outside the scroll area, so the
+        // name of the page you are on never scrolls away from you.
+        let mut title_row = row![page_header(self.screen.title(), self.subtitle_for(self.screen), scale)]
+            .spacing(spacing::SM)
+            .align_y(iced::Alignment::Center);
+        if let Some(actions) = self.header_actions(scale) {
+            title_row = title_row.push(Space::new().width(Length::Fill)).push(actions);
+        }
+        let title_row = container(title_row).padding(iced::Padding {
+            top: spacing::LG,
+            left: spacing::LG,
+            right: spacing::LG,
+            bottom: 0.0,
+        });
+
         // The Monitors editor (canvas + full property panel + policy/swap
         // sections) routinely exceeds window height — without scrolling,
         // everything past the window edge was just clipped and silently
         // invisible, not merely off-screen.
         //
         // Order matters here: the scrollable has to be the *outermost* of
-        // these three, so its scrollbar tracks the edge of the content pane.
+        // these, so its scrollbar tracks the edge of the content pane.
         // Nesting it inside the max-width/centering containers instead pins
         // the bar to the right edge of the centered column, which on a wide
         // window reads as a scrollbar floating in the middle of the screen.
-        let content = container(content)
-            .max_width(CONTENT_MAX_WIDTH)
-            .width(Length::Fill);
-        // Centred in the pane, GNOME-style. Left-aligning a capped column in
-        // a very wide window dumps all the slack on one side, which reads as
-        // a broken layout; splitting it evenly reads as deliberate margin.
-        let content = container(content).width(Length::Fill).center_x(Length::Fill);
-        let content = iced::widget::scrollable(content)
+        //
+        // And it is the only one. Five pages used to wrap themselves in a
+        // scrollable of their own inside this one, so a long page scrolled
+        // twice, with two scrollbars, depending on where the pointer was.
+        let body = iced::widget::scrollable(centred(content))
             .width(Length::Fill)
             .height(Length::Fill);
 
-        container(row![sidebar, content])
+        let page = column![centred(title_row.into()), body].width(Length::Fill);
+
+        container(column![header, row![sidebar, page].height(Length::Fill)])
             .style(|_theme: &Theme| container::Style {
                 background: Some(Background::Color(surface::root())),
                 ..container::Style::default()
             })
+            .into()
+    }
+
+    /// The bar across the top: the app's mark over the sidebar, and the
+    /// search field over the page.
+    fn header_bar(&self, scale: FontScale) -> Element<'_, Message> {
+        let mark_side = scale.apply(20.0);
+        let mark = container(Space::new())
+            .width(Length::Fixed(mark_side))
+            .height(Length::Fixed(mark_side))
+            .style(move |_t: &Theme| container::Style {
+                // The accent, filled: the one piece of chrome that is
+                // purple without being selected, because it *is* the
+                // app's identity, and the mockup's mark is the accent too.
+                background: Some(Background::Color(Tint::Accent.iced())),
+                border: iced::Border {
+                    radius: (mark_side * 0.3).into(),
+                    ..iced::Border::default()
+                },
+                ..container::Style::default()
+            });
+        let brand = row![
+            mark,
+            scaled_text("Settings", density::ROW_TEXT_BASE, scale)
+                .font(iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT })
+                .color(text()),
+        ]
+        .spacing(spacing::SM + spacing::XS)
+        .align_y(iced::Alignment::Center);
+
+        let search = search_field(
+            "Search settings",
+            &self.search_query,
+            Message::SearchChanged,
+            Some(self.search_id.clone()),
+            scale,
+        )
+        .width(Length::Fill);
+
+        container(
+            row![
+                container(brand).width(Length::Fixed(SIDEBAR_WIDTH - spacing::MD)),
+                search,
+            ]
+            .spacing(spacing::MD)
+            .align_y(iced::Alignment::Center),
+        )
+        .height(Length::Fixed(density::bar_height(scale) + spacing::SM))
+        .center_y(Length::Fixed(density::bar_height(scale) + spacing::SM))
+        .padding([0.0, spacing::MD])
+        .width(Length::Fill)
+        .style(|_t: &Theme| container::Style {
+            background: Some(Background::Color(surface::sidebar())),
+            border: iced::Border {
+                width: 1.0,
+                color: surface::card_border(),
+                ..iced::Border::default()
+            },
+            ..container::Style::default()
+        })
+        .into()
+    }
+
+    /// The grouped list of pages down the left.
+    ///
+    /// Filtered by the search field for now, by page title only; the
+    /// search palette that reaches every setting replaces this.
+    fn sidebar(&self, scale: FontScale) -> Element<'_, Message> {
+        let query = self.search_query.to_lowercase();
+        let mut nav = column![].spacing(spacing::MD);
+        let mut any_visible = false;
+        for category in NAV {
+            let visible: Vec<Screen> = category
+                .screens
+                .iter()
+                .copied()
+                .filter(|s| query.is_empty() || s.title().to_lowercase().contains(&query))
+                .collect();
+            if visible.is_empty() {
+                continue;
+            }
+            any_visible = true;
+
+            let mut group = column![container(section_label(category.label, scale))
+                .padding([spacing::XS, spacing::SM + 2.0])]
+            .spacing(1.0);
+            for screen in visible {
+                group = group.push(self.nav_item(screen, scale));
+            }
+            nav = nav.push(group);
+        }
+        if !any_visible {
+            nav = nav.push(
+                container(scaled_text("No matches", density::META_TEXT_BASE, scale).color(text_dim()))
+                    .padding([0.0, spacing::SM + 2.0]),
+            );
+        }
+
+        container(
+            iced::widget::scrollable(container(nav).padding([spacing::MD, spacing::SM]))
+                .height(Length::Fill),
+        )
+        .width(Length::Fixed(SIDEBAR_WIDTH))
+        .height(Length::Fill)
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(surface::sidebar())),
+            ..container::Style::default()
+        })
+        .into()
+    }
+
+    /// One page's entry in the sidebar: its mark, its name, and whatever
+    /// badge its module offers.
+    fn nav_item(&self, screen: Screen, scale: FontScale) -> Element<'_, Message> {
+        let selected = self.screen == screen;
+        // The text colour on the current page, dim elsewhere. Not the
+        // accent: the row's own fill already says "selected" in it, and
+        // an accent mark on an accent fill disappeared into it.
+        let mark_color = if selected { text() } else { text_dim() };
+        let mut line = row![
+            hyprforge_ui::glyph::page(screen.glyph(), scale.apply(NAV_MARK_BASE), mark_color),
+            scaled_text(screen.title(), density::ROW_TEXT_BASE * 0.9, scale).color(text()),
+            Space::new().width(Length::Fill),
+        ]
+        .spacing(spacing::SM + 2.0)
+        .align_y(iced::Alignment::Center);
+        match self.badge_for(screen) {
+            Some(NavBadge::Text(t)) => {
+                line = line.push(config_line(t, scale));
+            }
+            Some(NavBadge::Dot(tint)) => {
+                line = line.push(status_dot(tint, scale));
+            }
+            None => {}
+        }
+        // Centred in a fill-height container: a button's content sits at
+        // its top, and at a fixed row height that put every label above
+        // the middle of its own highlight.
+        iced::widget::button(container(line).center_y(Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fixed(density::row_height(scale) + spacing::XS))
+            .padding([0.0, spacing::SM + 2.0])
+            .style(move |t: &Theme, status| selectable_row_style(t, status, selected))
+            .on_press(Message::Navigate(screen))
             .into()
     }
 

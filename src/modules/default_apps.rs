@@ -453,10 +453,6 @@ impl DefaultAppsModule {
 impl SettingsModule for DefaultAppsModule {
     type Message = Message;
 
-    fn icon(&self) -> &'static str {
-        "\u{1F5C2}" // 🗂 — files and what opens them
-    }
-
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Refresh => load(),
@@ -519,8 +515,7 @@ impl SettingsModule for DefaultAppsModule {
     }
 
     fn view(&self, scale: FontScale) -> Element<'_, Message> {
-        let mut content = column![scaled_text("Default Applications", 22.0, scale)]
-            .spacing(spacing::LG);
+        let mut content = column![].spacing(spacing::LG);
 
         if let Some(error) = &self.error {
             content = content.push(scaled_text(error.clone(), 13.0, scale).color(theme::warning()));
@@ -579,7 +574,9 @@ impl SettingsModule for DefaultAppsModule {
             12.0,
             scale,
         ));
-        content.into()
+        // Padded like every other page, so its first section sits a
+        // gap below the title the shell draws, not flush against it.
+        iced::widget::container(content).padding(spacing::LG).width(iced::Length::Fill).into()
     }
 }
 

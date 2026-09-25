@@ -124,10 +124,6 @@ fn load() -> (Result<Prefs, String>, Option<String>) {
 impl SettingsModule for TrayModule {
     type Message = Message;
 
-    fn icon(&self) -> &'static str {
-        "\u{1F4E5}" // 📥 — an actual tray shape, unclaimed by any other screen
-    }
-
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Refresh => {
@@ -179,7 +175,7 @@ impl SettingsModule for TrayModule {
     }
 
     fn view(&self, scale: FontScale) -> Element<'_, Message> {
-        let mut content = column![scaled_text("Tray", 22.0, scale)].spacing(spacing::LG);
+        let mut content = column![].spacing(spacing::LG);
 
         if let Some(msg) = &self.error {
             content = content.push(scaled_text(msg.clone(), 13.0, scale).color(theme::warning()));
@@ -189,7 +185,9 @@ impl SettingsModule for TrayModule {
         content = content.push(self.offset_section(scale));
         content = content.push(self.dismissal_section(scale));
 
-        content.into()
+        // Padded like every other page, so its first section sits a
+        // gap below the title the shell draws, not flush against it.
+        iced::widget::container(content).padding(spacing::LG).width(iced::Length::Fill).into()
     }
 }
 

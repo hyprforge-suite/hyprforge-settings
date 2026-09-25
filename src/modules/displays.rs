@@ -1118,10 +1118,10 @@ impl DisplaysModule {
 impl SettingsModule for DisplaysModule {
     type Message = Message;
 
-
-    fn icon(&self) -> &'static str {
-        "\u{1F5A5}"
+    fn subtitle(&self) -> Option<String> {
+        (!self.connected).then(|| "hyprforge-displayd isn't running".into())
     }
+
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -1628,7 +1628,6 @@ impl SettingsModule for DisplaysModule {
         if !self.connected {
             return container(
                 column![
-                    scaled_text("Monitors", 22.0, scale),
                     scaled_text(
                         self.error
                             .clone()
@@ -1667,7 +1666,7 @@ impl SettingsModule for DisplaysModule {
             return self.import_review_view(state, scale);
         }
 
-        let mut content = column![scaled_text("Monitors", 22.0, scale)].spacing(spacing::LG);
+        let mut content = column![].spacing(spacing::LG);
 
         if let Some(notice) = self.setup_notice(scale) {
             content = content.push(notice);

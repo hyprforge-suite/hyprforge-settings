@@ -14,11 +14,38 @@
 //! would rescale the diagram in response to the very movement being made,
 //! sliding the grabbed rectangle out from under the pointer.
 
+use hyprforge_ui::theme;
 use iced::mouse;
 use iced::widget::canvas::{self, Canvas, Path, Text as CanvasText};
 use iced::{Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
 
 pub const CANVAS_HEIGHT: f32 = 380.0;
+
+/// The canvas's own corner, and a head's: the card radius the rows below
+/// use, and a smaller one for something drawn on it.
+const CANVAS_RADIUS: f32 = 9.0;
+const HEAD_RADIUS: f32 = 6.0;
+
+/// The dot grid's pitch, and a head's number badge.
+const GRID_STEP: f32 = 16.0;
+const BADGE_SIDE: f32 = 16.0;
+
+/// `top` laid over an opaque `bottom`, as one opaque colour.
+///
+/// A canvas fill is drawn once, over whatever the canvas already holds —
+/// here the dot grid — so a translucent accent would let the dots through
+/// the selected monitor. Compositing onto the card colour first draws the
+/// tint the selection means and hides the grid under it, as the other
+/// cards do.
+fn over(top: iced::Color, bottom: iced::Color) -> iced::Color {
+    let a = top.a;
+    iced::Color {
+        r: top.r * a + bottom.r * (1.0 - a),
+        g: top.g * a + bottom.g * (1.0 - a),
+        b: top.b * a + bottom.b * (1.0 - a),
+        a: 1.0,
+    }
+}
 /// Breathing room, in canvas pixels, around the fitted content.
 const PADDING: f32 = 24.0;
 /// Never zoom in past this many canvas px per logical px, even for a
@@ -406,13 +433,27 @@ impl<Message> canvas::Program<Message, Theme, Renderer> for LayoutCanvas<Message
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let palette = theme.extended_palette();
         let t = active_transform(state, &self.heads, bounds.size());
+        let accent = palette.primary.base.color;
 
-        let background = Path::rectangle(Point::ORIGIN, bounds.size());
-        frame.fill(&background, palette.background.weak.color);
+        // A recessed plane with a dot grid, the mockup's desk: the dots
+        // are what make it read as a surface things are placed on rather
+        // than an empty box.
+        let background = Path::rounded_rectangle(Point::ORIGIN, bounds.size(), CANVAS_RADIUS.into());
+        frame.fill(&background, theme::surface::sidebar());
+        let dot = canvas::Fill::from(theme::surface::card_border());
+        let mut gy = GRID_STEP / 2.0;
+        while gy < bounds.height {
+            let mut gx = GRID_STEP / 2.0;
+            while gx < bounds.width {
+                frame.fill_rectangle(Point::new(gx, gy), Size::new(1.0, 1.0), dot);
+                gx += GRID_STEP;
+            }
+            gy += GRID_STEP;
+        }
 
-        for head in &self.heads {
+        for (index, head) in self.heads.iter().enumerate() {
             let rect = head.rect(t);
-            let path = Path::rectangle(rect.position(), rect.size());
+            let path = Path::rounded_rectangle(rect.position(), rect.size(), HEAD_RADIUS.into());
 
             let is_dragging = state
                 .dragging
@@ -420,36 +461,62 @@ impl<Message> canvas::Program<Message, Theme, Renderer> for LayoutCanvas<Message
                 .is_some_and(|d| d.connector_hint == head.connector_hint);
             let is_selected = self.selected.as_deref() == Some(head.connector_hint.as_str());
 
-            let fill_color = if !head.enabled {
-                palette.background.strong.color
-            } else if is_dragging {
-                palette.primary.strong.color
+            // Grey cards, one of them the selection. The accent marks
+            // *which* monitor the rows below are about — the one meaning
+            // purple has here — and not every monitor at once, which is
+            // what filling them all with it did. A disabled head is a
+            // step darker, so it reads as present but off.
+            let fill = if !head.enabled {
+                theme::surface::sidebar()
+            } else if is_selected || is_dragging {
+                over(iced::Color { a: 0.14, ..accent }, theme::surface::row())
             } else {
-                palette.primary.base.color
+                theme::surface::row()
             };
-            frame.fill(&path, fill_color);
+            frame.fill(&path, fill);
             frame.stroke(
                 &path,
                 canvas::Stroke::default()
-                    .with_width(if is_selected { 3.0 } else { 2.0 })
-                    .with_color(if is_selected {
-                        palette.warning.base.color
-                    } else {
-                        palette.background.base.color
-                    }),
+                    .with_width(if is_selected || is_dragging { 2.0 } else { 1.0 })
+                    .with_color(if is_selected || is_dragging { accent } else { theme::surface::card_border() }),
             );
 
+            // The head's number, in a badge at its corner — the "1" and
+            // "2" the mockup draws, and the number Identify would show.
+            let badge = Size::new(BADGE_SIDE, BADGE_SIDE);
+            let badge_at = Point::new(rect.x + 6.0, rect.y + 6.0);
+            frame.fill(
+                &Path::rounded_rectangle(badge_at, badge, 3.0.into()),
+                if is_selected { accent } else { theme::surface::card_border() },
+            );
+            frame.fill_text(CanvasText {
+                content: (index + 1).to_string(),
+                position: Point::new(badge_at.x + BADGE_SIDE / 2.0, badge_at.y + BADGE_SIDE / 2.0),
+                color: if is_selected { palette.primary.base.text } else { theme::text() },
+                size: 11.0.into(),
+                align_x: iced::widget::text::Alignment::Center,
+                align_y: iced::alignment::Vertical::Center,
+                ..CanvasText::default()
+            });
+
+            // The name, centred: the mockup's layout, and the one that
+            // survives a small rectangle better than a corner label does.
             frame.fill_text(CanvasText {
                 content: head.label.clone(),
-                position: Point::new(rect.x + 6.0, rect.y + 6.0),
-                color: palette.primary.base.text,
-                size: 12.0.into(),
+                position: rect.center(),
+                color: if head.enabled { theme::text() } else { theme::text_dim() },
+                size: 13.0.into(),
+                align_x: iced::widget::text::Alignment::Center,
+                align_y: iced::alignment::Vertical::Center,
                 ..CanvasText::default()
             });
         }
 
         // Snap guides on top of the rectangles, so a flush edge is visible
-        // rather than something the user has to take on trust.
+        // rather than something the user has to take on trust. In the
+        // accent, faintly — they belong to the head being dragged, which
+        // is the selected one — and not the warning colour they used to
+        // be drawn in: an edge lining up is the opposite of a problem.
         if let Some(d) = &state.dragging {
             if let Some(dragged) = self
                 .heads
@@ -464,7 +531,7 @@ impl<Message> canvas::Program<Message, Theme, Renderer> for LayoutCanvas<Message
                 let (xs, ys) = snap_guides(dragged, &others);
                 let guide = canvas::Stroke::default()
                     .with_width(1.0)
-                    .with_color(palette.warning.base.color);
+                    .with_color(iced::Color { a: 0.6, ..accent });
                 for x in xs {
                     let cx = x as f32 * t.scale + t.offset.x;
                     frame.stroke(

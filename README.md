@@ -81,6 +81,23 @@ that it could not. `/run/user/$UID/<name>` fits.
 `--screen <name>` opens a given page and `--search <text>` opens with the
 palette showing, which is how a page is reached for a screenshot.
 
+Displays only draws its arrangement canvas with two or more monitors. To
+see it on a one-monitor machine, run `hyprforge-displayd run --mock` and
+this app together on a private session bus, and give the mock monitors
+with `hyprforge-displayctl simulate-topology 'BOE:0x0BC9:,DELL:U2723QE:X'`:
+
+```
+dbus-run-session --config-file=testing/private-bus.conf -- <script>
+```
+
+The private bus is what keeps the mock off the name the real daemon owns.
+The config is what keeps the test off your session: a stock session bus
+auto-starts whatever is asked for, and iced's theme detection asks for
+the desktop portal — which started xdg-desktop-portal and its Hyprland
+backend against the *real* compositor, from the environment the bus
+inherited. `testing/private-bus.conf` has no service directories, so
+nothing can be activated on it.
+
 ## It is where the suite's shared look comes from
 
 The Appearance screen resolves one `hyprforge_look::Theme` and

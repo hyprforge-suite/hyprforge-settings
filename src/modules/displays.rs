@@ -5,8 +5,9 @@ use std::time::Duration;
 use hyprforge_core::lua_setup::{self, HyprConfig, Placement, SetupPlan};
 use hyprforge_ui::theme::{spacing, FontScale, BASE_TEXT_SIZE};
 use hyprforge_ui::widgets::{
-    confirm_dialog, danger_button, divider, meta_text, primary_button, row_field, scaled_text,
-    secondary_button, section,
+    config_line, confirm_dialog, danger_button, divider, dropdown_menu_style, dropdown_style,
+    meta_text, primary_button, row_field, scaled_text, secondary_button, section,
+    segmented_choice, setting_list, setting_row, stepped_slider,
 };
 use crate::module::SettingsModule;
 
@@ -208,6 +209,13 @@ impl Eq for ScaleChoice {}
 /// An achievable off-preset scale is still offered, so an existing 160%
 /// profile stays representable rather than being dropped to the nearest
 /// preset and silently rescaling a working setup.
+/// How wide a Displays dropdown is: wide enough for "2560 × 1600
+/// (recommended)", and one width for all of them so the rows line up.
+const CONTROL_WIDTH: f32 = 280.0;
+
+/// The most refresh rates shown side by side before they become a list.
+const MAX_REFRESH_SEGMENTS: usize = 4;
+
 fn scale_choices(width: i32, height: i32, field_scale: &str) -> (Vec<ScaleChoice>, Option<f64>) {
     let current = field_scale
         .trim()
@@ -1129,8 +1137,18 @@ impl SettingsModule for DisplaysModule {
         })
     }
 
+    /// How many monitors, and — when there is more than one to arrange —
+    /// the mockup's "drag to arrange", because the canvas that says it
+    /// lost its titled card.
     fn subtitle(&self) -> Option<String> {
-        (!self.connected).then(|| "hyprforge-displayd isn't running".into())
+        if !self.connected {
+            return Some("hyprforge-displayd isn't running".into());
+        }
+        let heads = self.editor.as_ref()?.profile.heads.len();
+        Some(match heads {
+            1 => "1 connected".into(),
+            n => format!("{n} connected · drag to arrange"),
+        })
     }
 
 
@@ -1912,11 +1930,9 @@ impl DisplaysModule {
                 Message::HeadDragMoved,
             )
             .into_element();
-            body = body.push(section(
-                "Arrangement — drag a monitor to match your desk",
-                scale,
-                canvas,
-            ));
+            // No card around it: the canvas is its own recessed plane, and
+            // "drag to arrange" is in the page's subtitle.
+            body = body.push(canvas);
         }
 
         let choices: Vec<HeadChoice> = editor.profile.heads.iter().map(HeadChoice::new).collect();
@@ -1924,27 +1940,20 @@ impl DisplaysModule {
             .selected
             .as_ref()
             .and_then(|hint| choices.iter().find(|c| &c.hint == hint).cloned());
-        // With a single display there is nothing to pick between, so the
-        // picker is just a row restating the name — show it as a heading.
-        let monitor_picker: Element<'_, Message> = if choices.len() > 1 {
-            row_field(
-                "Monitor",
-                iced::widget::pick_list(choices, selected_choice, |c: HeadChoice| {
-                    Message::SelectHead(c.hint)
-                })
-                .placeholder("Select a monitor"),
-            )
-        } else {
-            match selected_choice {
-                Some(c) => column![
-                    scaled_text(c.label.clone(), 16.0, scale),
-                    meta_text(c.hint.clone(), 12.0, scale),
-                ]
-                .spacing(spacing::XS)
-                .into(),
-                None => meta_text("No monitor selected.", 13.0, scale).into(),
-            }
+        // The selected monitor's name as the heading over its rows, and a
+        // picker row only when there is more than one to pick between.
+        let heading: Element<'_, Message> = match &selected_choice {
+            Some(c) => row![
+                scaled_text(c.label.clone(), 15.0, scale)
+                    .font(iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT }),
+                config_line(c.hint.clone(), scale),
+            ]
+            .spacing(spacing::SM)
+            .align_y(iced::Alignment::Center)
+            .into(),
+            None => meta_text("No monitor selected.", 13.0, scale).into(),
         };
+        let fixed = |w: f32| Length::Fixed(scale.apply(w));
 
         let properties: Element<'_, Message> = if editor.selected_head().is_some() {
             // The stored mode is always offered, even when the live mode
@@ -2011,67 +2020,116 @@ impl DisplaysModule {
             }
             refresh_rates.sort_by_key(|r| std::cmp::Reverse(r.mhz));
             refresh_rates.dedup();
-
-            let resolution_field: Element<'_, Message> = column![
-                row_field(
-                    "Resolution",
-                    iced::widget::pick_list(
-                        resolutions,
-                        selected_resolution,
-                        Message::ResolutionSelected,
-                    )
-                    .placeholder("Select a resolution"),
-                ),
-                row_field(
-                    "Refresh rate",
-                    iced::widget::pick_list(
-                        refresh_rates,
-                        stored_refresh.map(|mhz| RefreshOption { mhz }),
-                        Message::RefreshSelected,
-                    )
-                    .placeholder("Select a refresh rate"),
-                ),
-            ]
-            .spacing(spacing::SM)
-            .into();
-
-            let orientation_field = row_field(
-                "Orientation",
-                iced::widget::pick_list(
-                    TRANSFORM_LABELS.to_vec(),
-                    Some(editor.field_transform.as_str()),
-                    |label: &str| Message::FieldTransform(label.to_string()),
-                ),
-            );
+            let selected_refresh = stored_refresh.map(|mhz| RefreshOption { mhz });
 
             let (px_w, px_h) = editor
                 .selected_head()
                 .map(|h| (h.width, h.height))
                 .unwrap_or((1920, 1080));
             let (scale_options, current_scale) = scale_choices(px_w, px_h, &editor.field_scale);
-            let scale_field = row_field(
-                "Scale",
-                iced::widget::pick_list(
-                    scale_options,
-                    current_scale.map(|percent| ScaleChoice { percent }),
-                    // Keep the exact value: rounding to a whole percent here
-                    // is what made a valid scale invalid again.
-                    |c: ScaleChoice| Message::FieldScale(format!("{:.4}", c.percent)),
-                )
-                .placeholder("Select a scale"),
-            );
+
+            let mut rows: Vec<Element<'_, Message>> = Vec::new();
+            if choices.len() > 1 {
+                rows.push(setting_row(
+                    rows.len(),
+                    "Monitor",
+                    None,
+                    iced::widget::pick_list(choices, selected_choice, |c: HeadChoice| {
+                        Message::SelectHead(c.hint)
+                    })
+                    .placeholder("Select a monitor")
+                    .style(dropdown_style)
+                    .menu_style(dropdown_menu_style)
+                    .width(fixed(CONTROL_WIDTH)),
+                    scale,
+                ));
+            }
 
             // Scale first, then resolution, then orientation — the Windows
             // ordering, and the rough order of how often each is touched.
-            column![monitor_picker, scale_field, resolution_field, orientation_field]
-                .spacing(spacing::SM)
-                .into()
+            //
+            // A slider over the scales this panel can actually take, and
+            // nothing between them: Hyprland refuses a scale that does not
+            // divide the mode evenly, so a continuous slider would offer
+            // values that bounce. `stepped_slider` slides over positions in
+            // the list, and there is no position between two of them.
+            let scale_index = current_scale
+                .and_then(|pct| scale_options.iter().position(|c| (c.percent - pct).abs() < 0.5))
+                .unwrap_or(0);
+            let scale_readout = current_scale
+                .map(|pct| format!("{:.2}×", pct / 100.0))
+                .unwrap_or_else(|| "—".into());
+            let scale_percents: Vec<f64> = scale_options.iter().map(|c| c.percent).collect();
+            rows.push(setting_row(
+                rows.len(),
+                "Scale",
+                None,
+                stepped_slider(
+                    scale_percents.len(),
+                    scale_index,
+                    // Keep the exact value: rounding to a whole percent here
+                    // is what made a valid scale invalid again.
+                    move |i| Message::FieldScale(format!("{:.4}", scale_percents[i])),
+                    None,
+                    scale_readout,
+                    scale,
+                ),
+                scale,
+            ));
+
+            rows.push(setting_row(
+                rows.len(),
+                "Resolution",
+                None,
+                iced::widget::pick_list(resolutions, selected_resolution, Message::ResolutionSelected)
+                    .placeholder("Select a resolution")
+                    .style(dropdown_style)
+                    .menu_style(dropdown_menu_style)
+                    .width(fixed(CONTROL_WIDTH)),
+                scale,
+            ));
+
+            // A handful of rates side by side, as the mockup draws them;
+            // past four they no longer fit the row, and a list is honest.
+            let refresh: Element<'_, Message> = if refresh_rates.len() <= MAX_REFRESH_SEGMENTS {
+                segmented_choice(
+                    &refresh_rates,
+                    selected_refresh.as_ref(),
+                    |r| r.to_string(),
+                    Message::RefreshSelected,
+                    scale,
+                )
+            } else {
+                iced::widget::pick_list(refresh_rates, selected_refresh, Message::RefreshSelected)
+                    .placeholder("Select a refresh rate")
+                    .style(dropdown_style)
+                    .menu_style(dropdown_menu_style)
+                    .width(fixed(CONTROL_WIDTH))
+                    .into()
+            };
+            rows.push(setting_row(rows.len(), "Refresh rate", None, refresh, scale));
+
+            rows.push(setting_row(
+                rows.len(),
+                "Orientation",
+                None,
+                iced::widget::pick_list(
+                    TRANSFORM_LABELS.to_vec(),
+                    Some(editor.field_transform.as_str()),
+                    |label: &str| Message::FieldTransform(label.to_string()),
+                )
+                .style(dropdown_style)
+                .menu_style(dropdown_menu_style)
+                .width(fixed(CONTROL_WIDTH)),
+                scale,
+            ));
+
+            setting_list(rows).into()
         } else {
-            column![monitor_picker, meta_text("This profile has no heads.", 13.0, scale)]
-                .spacing(spacing::SM)
-                .into()
+            meta_text("This profile has no heads.", 13.0, scale).into()
         };
-        body = body.push(section("Selected monitor", scale, properties));
+        body = body.push(column![heading, properties].spacing(spacing::SM));
+
 
         let swap_hints: Vec<String> = editor
             .profile

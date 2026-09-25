@@ -1489,7 +1489,7 @@ impl WindowRulesModule {
             draft.preview(&self.name_for(draft)).trim().to_string()
         };
         column![
-            scaled_text(text, 12.0, scale).font(iced::Font::MONOSPACE),
+            scaled_text(text, 12.0, scale).font(hyprforge_ui::theme::mono_font()),
             meta_text("Written to ~/.config/hypr/hyprforge/window-rules.lua", 11.0, scale),
         ]
         .spacing(spacing::XS)

@@ -295,6 +295,18 @@ impl SessionModule {
 impl SettingsModule for SessionModule {
     type Message = Message;
 
+    /// No preview and no Discard, for the same reason as Desktop's: the
+    /// drafts are fields of list entries, and this page has never offered
+    /// to take them back.
+    fn pending(&self) -> Option<crate::module::Pending<Message>> {
+        (!self.drafts.is_empty()).then(|| crate::module::Pending {
+            summary: hyprforge_ui::widgets::pending_label(self.drafts.len()),
+            preview: None,
+            apply: Message::Commit,
+            discard: None,
+        })
+    }
+
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -513,21 +525,6 @@ impl SettingsModule for SessionModule {
             tabs = tabs.push(button.on_press(Message::TabSelected(tab)));
         }
         content = content.push(tabs);
-
-        if !self.drafts.is_empty() {
-            content = content.push(
-                row![
-                    scaled_text(
-                        format!("{} field(s) typed but not applied", self.drafts.len()),
-                        13.0,
-                        scale,
-                    ),
-                    primary_button("Apply").on_press(Message::Commit),
-                ]
-                .spacing(spacing::MD)
-                .align_y(iced::Alignment::Center),
-            );
-        }
 
         content = content.push(match self.tab {
             Tab::Autostart => self.autostart_view(scale),

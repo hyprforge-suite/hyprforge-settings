@@ -399,6 +399,18 @@ impl AppearanceModule {
 impl SettingsModule for AppearanceModule {
     type Message = Message;
 
+    /// The Hyprland drafts only. The desktop and animation rows each
+    /// write through their own Set button, so nothing of theirs is ever
+    /// held back for this bar to apply.
+    fn pending(&self) -> Option<crate::module::Pending<Message>> {
+        (!self.drafts.is_empty()).then(|| crate::module::Pending {
+            summary: hyprforge_ui::widgets::pending_label(self.drafts.len()),
+            preview: crate::module::drafts_preview(self.drafts.iter().map(|(k, v)| (*k, v.as_str()))),
+            apply: Message::ApplyDrafts,
+            discard: Some(Message::DiscardDrafts),
+        })
+    }
+
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -915,19 +927,7 @@ impl AppearanceModule {
         scale: FontScale,
     ) -> iced::widget::Column<'a, Message> {
         if !self.drafts.is_empty() {
-            content = content.push(
-                row![
-                    scaled_text(
-                        format!("{} field(s) typed but not applied", self.drafts.len()),
-                        13.0,
-                        scale,
-                    ),
-                    primary_button("Apply").on_press(Message::ApplyDrafts),
-                    secondary_button("Discard").on_press(Message::DiscardDrafts),
-                ]
-                .spacing(spacing::MD)
-                .align_y(iced::Alignment::Center),
-            );
+            // The Apply/Discard bar is the shell's now — see `pending`.
         }
 
         let rows = self.rows();

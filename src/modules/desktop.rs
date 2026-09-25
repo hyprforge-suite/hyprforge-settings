@@ -765,6 +765,19 @@ impl DesktopModule {
 impl SettingsModule for DesktopModule {
     type Message = Message;
 
+    /// No preview and no Discard: these drafts are fields of a listener
+    /// or a wallpaper entry rather than keys with a line of their own,
+    /// and this page has never been able to take them back — offering a
+    /// Discard here would be a new feature wearing an old button.
+    fn pending(&self) -> Option<crate::module::Pending<Message>> {
+        (!self.drafts.is_empty()).then(|| crate::module::Pending {
+            summary: hyprforge_ui::widgets::pending_label(self.drafts.len()),
+            preview: None,
+            apply: Message::Commit,
+            discard: None,
+        })
+    }
+
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -1093,21 +1106,6 @@ impl SettingsModule for DesktopModule {
             tabs = tabs.push(button.on_press(Message::TabSelected(tab)));
         }
         content = content.push(tabs);
-
-        if !self.drafts.is_empty() {
-            content = content.push(
-                row![
-                    scaled_text(
-                        format!("{} field(s) typed but not applied", self.drafts.len()),
-                        13.0,
-                        scale,
-                    ),
-                    primary_button("Apply").on_press(Message::Commit),
-                ]
-                .spacing(spacing::MD)
-                .align_y(iced::Alignment::Center),
-            );
-        }
 
         // Offered only while no review is open, so the screen never shows
         // an Import button above a list the user is already reviewing.

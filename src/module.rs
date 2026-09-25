@@ -41,11 +41,59 @@ pub trait SettingsModule {
         None
     }
 
+    /// Changes on this page that are not written yet, if any — the shell
+    /// draws one bar for them along the foot of every page, and the
+    /// header's chip turns from "live" to "pending" while they exist.
+    ///
+    /// `None` is a claim: that everything shown on the page is already
+    /// what the file says. A page that edits in place and writes at once
+    /// returns `None` by default and is right to.
+    fn pending(&self) -> Option<Pending<Self::Message>> {
+        None
+    }
+
     /// A short mark at the end of this page's sidebar entry: a count, an
     /// interface name, or a dot for a live connection.
     fn nav_badge(&self) -> Option<NavBadge> {
         None
     }
+}
+
+/// Changes a page is holding back, and how to write or drop them.
+#[derive(Debug, Clone)]
+pub struct Pending<M> {
+    /// What is waiting — "3 pending changes", "Layout not applied".
+    pub summary: String,
+    /// The setting as it will be written, when one line can say it —
+    /// `input:follow_mouse = 1`. A readable form of the change, not the
+    /// generated Lua byte for byte.
+    pub preview: Option<String>,
+    pub apply: M,
+    /// `None` when the page cannot take its drafts back.
+    pub discard: Option<M>,
+}
+
+impl<M> Pending<M> {
+    /// Maps the messages into the shell's own, as `Element::map` does.
+    pub fn map<N>(self, f: impl Fn(M) -> N) -> Pending<N> {
+        Pending {
+            summary: self.summary,
+            preview: self.preview,
+            apply: f(self.apply),
+            discard: self.discard.map(f),
+        }
+    }
+}
+
+/// The preview for a set of typed-but-unapplied values: the first as
+/// `key = value`, and how many more follow it.
+pub fn drafts_preview<'a>(mut drafts: impl Iterator<Item = (&'a str, &'a str)>) -> Option<String> {
+    let (key, value) = drafts.next()?;
+    let rest = drafts.count();
+    Some(match rest {
+        0 => format!("{key} = {value}"),
+        n => format!("{key} = {value}  +{n} more"),
+    })
 }
 
 /// What a sidebar entry can carry beside its label.
@@ -55,4 +103,22 @@ pub enum NavBadge {
     Text(String),
     /// A dot in a state colour — a device connected, a radio on.
     Dot(Tint),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bar shows the setting as it will be written, so one draft is
+    /// exactly that line and more say how many are hidden behind it —
+    /// never a silent subset.
+    #[test]
+    fn a_preview_names_the_first_draft_and_counts_the_rest() {
+        assert_eq!(drafts_preview([("a:b", "1")].into_iter()).as_deref(), Some("a:b = 1"));
+        assert_eq!(
+            drafts_preview([("a:b", "1"), ("c:d", "x"), ("e:f", "y")].into_iter()).as_deref(),
+            Some("a:b = 1  +2 more")
+        );
+        assert_eq!(drafts_preview(std::iter::empty()), None);
+    }
 }

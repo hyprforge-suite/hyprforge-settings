@@ -7,10 +7,10 @@ mod singleton;
 use hyprforge_ui::density;
 use hyprforge_ui::theme::{app_theme, spacing, surface, text, text_dim, FontScale};
 use hyprforge_ui::widgets::{
-    config_line, page_header, primary_button, scaled_text, search_field, secondary_button,
+    chip, config_line, page_header, pending_bar, primary_button, scaled_text, search_field, secondary_button,
     section_label, selectable_row_style, status_dot, Tint,
 };
-use crate::module::{NavBadge, SettingsModule};
+use crate::module::{NavBadge, Pending, SettingsModule};
 use iced::keyboard::{self, key, Key};
 use iced::widget::{column, container, operation, row, Id, Space};
 use iced::{window, Background, Element, Length, Size, Subscription, Task, Theme};
@@ -944,6 +944,25 @@ impl App {
         }
     }
 
+    /// The active page's unapplied changes, mapped into the app's messages.
+    fn pending(&self) -> Option<Pending<Message>> {
+        match self.screen {
+            Screen::Monitors => self.displays.pending().map(|p| p.map(Message::Displays)),
+            Screen::WindowRules => self.window_rules.pending().map(|p| p.map(Message::WindowRules)),
+            Screen::Shortcuts => self.shortcuts.pending().map(|p| p.map(Message::Shortcuts)),
+            Screen::Input => self.input.pending().map(|p| p.map(Message::Input)),
+            Screen::Network => self.network.pending().map(|p| p.map(Message::Network)),
+            Screen::Bluetooth => self.bluetooth.pending().map(|p| p.map(Message::Bluetooth)),
+            Screen::Power => self.power.pending().map(|p| p.map(Message::Power)),
+            Screen::Tray => self.tray.pending().map(|p| p.map(Message::Tray)),
+            Screen::DefaultApps => self.default_apps.pending().map(|p| p.map(Message::DefaultApps)),
+            Screen::Appearance => self.appearance.pending().map(|p| p.map(Message::Appearance)),
+            Screen::Desktop => self.desktop.pending().map(|p| p.map(Message::Desktop)),
+            Screen::Session => self.session.pending().map(|p| p.map(Message::Session)),
+            Screen::System => self.system.pending().map(|p| p.map(Message::System)),
+        }
+    }
+
     /// The main window: the mockup's `1b` shell.
     ///
     /// A header bar across the top holding the app's mark and the search
@@ -954,7 +973,8 @@ impl App {
     fn settings_view(&self) -> Element<'_, Message> {
         let scale = self.font_scale;
 
-        let header = self.header_bar(scale);
+        let pending = self.pending();
+        let header = self.header_bar(pending.is_some(), scale);
         let sidebar = self.sidebar(scale);
 
         let content: Element<'_, Message> = match self.screen {
@@ -1007,7 +1027,13 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        let page = column![centred(title_row.into()), body].width(Length::Fill);
+        let mut page = column![centred(title_row.into()), body].width(Length::Fill);
+        // Pinned under the scroll area rather than inside it: changes
+        // waiting to be written are the one thing on a page that must
+        // never be scrolled out of sight.
+        if let Some(p) = pending {
+            page = page.push(pending_bar(p.summary, p.preview, p.discard, p.apply, scale));
+        }
 
         container(column![header, row![sidebar, page].height(Length::Fill)])
             .style(|_theme: &Theme| container::Style {
@@ -1017,9 +1043,10 @@ impl App {
             .into()
     }
 
-    /// The bar across the top: the app's mark over the sidebar, and the
-    /// search field over the page.
-    fn header_bar(&self, scale: FontScale) -> Element<'_, Message> {
+    /// The bar across the top: the app's mark over the sidebar, the
+    /// search field over the page, and whether this page has anything
+    /// waiting to be written.
+    fn header_bar(&self, has_pending: bool, scale: FontScale) -> Element<'_, Message> {
         let mark_side = scale.apply(20.0);
         let mark = container(Space::new())
             .width(Length::Fixed(mark_side))
@@ -1057,6 +1084,14 @@ impl App {
             row![
                 container(brand).width(Length::Fixed(SIDEBAR_WIDTH - spacing::MD)),
                 search,
+                // "live" in the success colour when what the page shows is
+                // what the files say; "pending" in the warning colour while
+                // anything is held back. The mockup's `● live`, and the
+                // reason it is a state colour: it is a state.
+                match has_pending {
+                    false => chip("● live", Tint::Success, scale),
+                    true => chip("● pending", Tint::Warning, scale),
+                },
             ]
             .spacing(spacing::MD)
             .align_y(iced::Alignment::Center),

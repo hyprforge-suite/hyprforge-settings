@@ -145,6 +145,26 @@ mod tests {
         })
     }
 
+    /// A typed value that is not applied yet is what the shell's bar
+    /// exists to show: the count, the line it will write, and both ways
+    /// out. Without a draft there is nothing pending — which is the
+    /// header chip's "live" claim.
+    #[test]
+    fn a_typed_value_is_pending_until_applied() {
+        with_temp_config(|m| {
+            assert!(m.pending().is_none(), "nothing typed yet");
+            let _ = m.update(Message::DraftChanged("input:repeat_rate", "45".into()));
+            let pending = m.pending().expect("a draft is pending");
+            assert_eq!(pending.summary, "1 pending change");
+            assert_eq!(pending.preview.as_deref(), Some("input:repeat_rate = 45"));
+            assert!(matches!(pending.apply, Message::ApplyDrafts));
+            assert!(matches!(pending.discard, Some(Message::DiscardDrafts)));
+
+            let _ = m.update(Message::ApplyDrafts);
+            assert!(m.pending().is_none(), "applied, so nothing is held back");
+        });
+    }
+
     #[test]
     fn a_new_module_owns_nothing() {
         with_temp_config(|m| {

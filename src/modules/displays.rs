@@ -1118,6 +1118,17 @@ impl DisplaysModule {
 impl SettingsModule for DisplaysModule {
     type Message = Message;
 
+    /// A layout edited on the canvas and not yet handed to the daemon.
+    /// One change with no count, so the summary says what it is instead.
+    fn pending(&self) -> Option<crate::module::Pending<Message>> {
+        self.editor.as_ref().filter(|e| e.unapplied).map(|_| crate::module::Pending {
+            summary: "Layout not applied".into(),
+            preview: None,
+            apply: Message::ApplyEditor,
+            discard: Some(Message::DiscardEdits),
+        })
+    }
+
     fn subtitle(&self) -> Option<String> {
         (!self.connected).then(|| "hyprforge-displayd isn't running".into())
     }
@@ -1857,27 +1868,16 @@ impl DisplaysModule {
         // Above the canvas, not below it: this is the answer to "why is
         // nothing happening", and an explanation that needs scrolling to
         // is not one.
+        //
+        // The buttons are the shell's pending bar now (see `pending`); what
+        // stays here is the one thing that bar has no room to say.
         if editor.unapplied {
-            body = body.push(section(
-                "Not applied yet",
+            body = body.push(meta_text(
+                "These changes are not on screen yet. Applying starts a countdown \
+                 that puts the old layout back if you do not confirm — so a setting \
+                 that blanks a monitor cannot strand you.",
+                BASE_TEXT_SIZE,
                 scale,
-                column![
-                    meta_text(
-                        "These changes are not on screen yet. Applying starts a countdown \
-                         that puts the old layout back if you do not confirm — so a setting \
-                         that blanks a monitor cannot strand you.",
-                        BASE_TEXT_SIZE,
-                        scale,
-                    ),
-                    row![
-                        secondary_button("Discard changes").on_press(Message::DiscardEdits),
-                        iced::widget::Space::new().width(Length::Fill),
-                        primary_button("Save & Apply").on_press(Message::ApplyEditor),
-                    ]
-                    .spacing(spacing::SM)
-                    .align_y(iced::Alignment::Center),
-                ]
-                .spacing(spacing::MD),
             ));
         }
 

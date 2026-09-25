@@ -367,6 +367,15 @@ impl<M: Catalogued> CatalogScreen<M> {
 impl<M: Catalogued> SettingsModule for CatalogScreen<M> {
     type Message = Message;
 
+    fn pending(&self) -> Option<crate::module::Pending<Message>> {
+        (!self.drafts.is_empty()).then(|| crate::module::Pending {
+            summary: hyprforge_ui::widgets::pending_label(self.drafts.len()),
+            preview: crate::module::drafts_preview(self.drafts.iter().map(|(k, v)| (*k, v.as_str()))),
+            apply: Message::ApplyDrafts,
+            discard: Some(Message::DiscardDrafts),
+        })
+    }
+
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
@@ -573,22 +582,6 @@ impl<M: Catalogued> SettingsModule for CatalogScreen<M> {
             .spacing(spacing::MD)
             .align_y(iced::Alignment::Center),
         );
-
-        if !self.drafts.is_empty() {
-            content = content.push(
-                row![
-                    scaled_text(
-                        format!("{} field(s) typed but not applied", self.drafts.len()),
-                        13.0,
-                        scale,
-                    ),
-                    primary_button("Apply").on_press(Message::ApplyDrafts),
-                    secondary_button("Discard").on_press(Message::DiscardDrafts),
-                ]
-                .spacing(spacing::MD)
-                .align_y(iced::Alignment::Center),
-            );
-        }
 
         let mut any_row = false;
         for category in M::catalog().categories {

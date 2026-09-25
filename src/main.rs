@@ -2,15 +2,16 @@ mod ipc;
 mod look;
 mod module;
 mod modules;
+mod search;
 mod singleton;
 
 use hyprforge_ui::density;
 use hyprforge_ui::theme::{app_theme, spacing, surface, text, text_dim, FontScale};
 use hyprforge_ui::widgets::{
-    chip, config_line, page_header, pending_bar, primary_button, scaled_text, search_field, secondary_button,
+    chip, config_line, hint_text, page_header, pending_bar, primary_button, scaled_text, search_field, secondary_button,
     section_label, selectable_row_style, status_dot, Tint,
 };
-use crate::module::{NavBadge, Pending, SettingsModule};
+use crate::module::{NavBadge, Pending, SearchEntry, SettingsModule};
 use iced::keyboard::{self, key, Key};
 use iced::widget::{column, container, operation, row, Id, Space};
 use iced::{window, Background, Element, Length, Size, Subscription, Task, Theme};
@@ -109,6 +110,39 @@ const SCREEN_NAMES: &[&str] = &[
 
 const SIDEBAR_WIDTH: f32 = 240.0;
 
+/// The most pages the palette lists, and the most rows in each of its
+/// other two groups. Enough to find what you meant; past this the query
+/// wants another letter rather than the palette wanting a scrollbar.
+const PALETTE_PAGES: usize = 4;
+const PALETTE_ROWS: usize = 6;
+
+/// How wide the palette grows at most — wide enough for a label and its
+/// page side by side, narrow enough to read as a panel over the page
+/// rather than a second page.
+const PALETTE_WIDTH: f32 = 640.0;
+
+/// What the palette found, in the order Enter would take it.
+struct Palette {
+    pages: Vec<Screen>,
+    settings: Vec<(Screen, SearchEntry<Message>)>,
+    keys: Vec<(Screen, SearchEntry<Message>)>,
+}
+
+impl Palette {
+    /// What Enter does: the first page, else the first setting, else the
+    /// first key — the same order the palette draws them in, so the
+    /// highlighted row is always the one that gets taken.
+    fn first(&self) -> Option<Message> {
+        if let Some(screen) = self.pages.first() {
+            return Some(Message::Navigate(*screen));
+        }
+        self.settings
+            .first()
+            .or(self.keys.first())
+            .map(|(screen, entry)| Message::Reveal(*screen, entry.reveal.clone()))
+    }
+}
+
 /// A sidebar page mark's box at 100%. The mark itself fills most of it;
 /// at the view marks' smaller size an outline beside a 13px label read
 /// as a speck.
@@ -147,6 +181,17 @@ static INITIAL_SCREEN: std::sync::OnceLock<Screen> = std::sync::OnceLock::new();
 /// is on.
 static INITIAL_DESKTOP_TAB: std::sync::OnceLock<modules::desktop::Tab> =
     std::sync::OnceLock::new();
+
+/// Set from `--search`: text to open the window with in the search
+/// field, palette showing.
+///
+/// For the same reason `--screen` exists — making a state reviewable by
+/// screenshot. The palette only exists while there is a query, and
+/// without this there is no way to raise it from outside the app on a
+/// machine with no input injector. It only applies to a window this
+/// process opens; a second invocation hands its `--screen` to the
+/// running one and says nothing about a search.
+static INITIAL_SEARCH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 fn main() -> iced::Result {
     // `from_default_env()` alone defaults to ERROR, and these crates emit
@@ -187,12 +232,23 @@ fn main() -> iced::Result {
     // running yet to hand it off to.
     let mut requested_screen: Option<String> = None;
     while let Some(arg) = args.next() {
+        if arg == "--search" {
+            let Some(query) = args.next() else {
+                eprintln!("usage: hyprforge-settings [--screen <name>] [--search <text>]");
+                std::process::exit(2);
+            };
+            INITIAL_SEARCH.set(query).ok().unwrap_or(());
+            continue;
+        }
         let value = match arg.as_str() {
             "--screen" => args.next(),
             other => other.strip_prefix("--screen=").map(str::to_string),
         };
         let Some(value) = value else {
-            eprintln!("usage: hyprforge-settings [--screen <{}>]", SCREEN_NAMES.join("|"));
+            eprintln!(
+                "usage: hyprforge-settings [--screen <{}>] [--search <text>]",
+                SCREEN_NAMES.join("|")
+            );
             std::process::exit(2);
         };
         match screen_from_cli(&value) {
@@ -531,6 +587,11 @@ const NAV: &[NavCategory] = &[
 enum Message {
     Navigate(Screen),
     SearchChanged(String),
+    /// Enter in the search field: take the palette's first result.
+    SearchSubmit,
+    /// A setting picked in the palette: go to its page, then send the
+    /// page what it needs to bring that setting into view.
+    Reveal(Screen, Vec<Message>),
     FocusSearch,
     ClearOrCancel,
     RefreshActive,
@@ -620,7 +681,7 @@ impl App {
                 default_apps,
                 session,
                 system,
-                search_query: String::new(),
+                search_query: INITIAL_SEARCH.get().cloned().unwrap_or_default(),
                 search_id: Id::unique(),
                 font_scale: FontScale(hyprforge_ui::theme::active().font_scale),
                 main_window: None,
@@ -692,7 +753,23 @@ impl App {
         match message {
             Message::Navigate(screen) => {
                 self.screen = screen;
+                // Going somewhere closes the palette, whether it was the
+                // palette that sent you or the sidebar.
+                self.search_query.clear();
                 Task::none()
+            }
+            Message::SearchSubmit => match self.palette().first() {
+                Some(pick) => self.update(pick),
+                None => Task::none(),
+            },
+            Message::Reveal(screen, messages) => {
+                self.screen = screen;
+                self.search_query.clear();
+                let mut tasks = Vec::with_capacity(messages.len());
+                for message in messages {
+                    tasks.push(self.update(message));
+                }
+                Task::batch(tasks)
             }
             Message::SearchChanged(query) => {
                 self.search_query = query;
@@ -963,6 +1040,177 @@ impl App {
         }
     }
 
+    /// Every setting any page offers the palette, tagged with its page.
+    fn search_entries(&self) -> Vec<(Screen, SearchEntry<Message>)> {
+        let tag = |screen: Screen| move |e: SearchEntry<Message>| (screen, e);
+        let mut all: Vec<(Screen, SearchEntry<Message>)> = Vec::new();
+        all.extend(
+            self.input.search_entries().into_iter().map(|e| e.map(Message::Input)).map(tag(Screen::Input)),
+        );
+        all.extend(
+            self.appearance
+                .search_entries()
+                .into_iter()
+                .map(|e| e.map(Message::Appearance))
+                .map(tag(Screen::Appearance)),
+        );
+        all.extend(
+            self.system.search_entries().into_iter().map(|e| e.map(Message::System)).map(tag(Screen::System)),
+        );
+        all
+    }
+
+    /// What the palette shows for the current query.
+    fn palette(&self) -> Palette {
+        let query = &self.search_query;
+        let screens: Vec<Screen> = NAV.iter().flat_map(|c| c.screens.iter().copied()).collect();
+        let entries = self.search_entries();
+        Palette {
+            pages: search::best(query, screens.iter(), |s| s.title(), PALETTE_PAGES)
+                .into_iter()
+                .copied()
+                .collect(),
+            settings: search::best(query, entries.iter(), |(_, e)| e.label, PALETTE_ROWS)
+                .into_iter()
+                .cloned()
+                .collect(),
+            keys: search::best(query, entries.iter(), |(_, e)| e.key, PALETTE_ROWS)
+                .into_iter()
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// The search palette, over the page while the search field has text.
+    ///
+    /// The first result is drawn selected because it is what Enter
+    /// takes — the highlight is the answer to "what happens if I press
+    /// Enter now", which a palette otherwise leaves you to guess.
+    fn palette_view(&self, scale: FontScale) -> Element<'_, Message> {
+        let palette = self.palette();
+        let total = palette.pages.len() + palette.settings.len() + palette.keys.len();
+        let mut first = true;
+        let mut take_first = || std::mem::replace(&mut first, false);
+
+        let row_button = |content: Element<'static, Message>, selected: bool, on_press: Message| {
+            iced::widget::button(content)
+                .width(Length::Fill)
+                .padding([spacing::SM - 2.0, spacing::SM + 2.0])
+                .style(move |t: &Theme, status| selectable_row_style(t, status, selected))
+                .on_press(on_press)
+        };
+
+        let mut body = column![row![
+            section_label("Search", scale),
+            Space::new().width(Length::Fill),
+            config_line(
+                match total {
+                    1 => "1 match".to_string(),
+                    n => format!("{n} matches"),
+                },
+                scale
+            ),
+        ]
+        .align_y(iced::Alignment::Center)]
+        .spacing(2.0);
+
+        if !palette.pages.is_empty() {
+            body = body.push(container(section_label("Pages", scale)).padding([spacing::SM, 0.0]));
+            for screen in palette.pages {
+                let selected = take_first();
+                let mark = if selected { text() } else { text_dim() };
+                let line = row![
+                    hyprforge_ui::glyph::page(screen.glyph(), scale.apply(NAV_MARK_BASE), mark),
+                    scaled_text(screen.title(), density::ROW_TEXT_BASE * 0.9, scale).color(text()),
+                ]
+                .spacing(spacing::SM + 2.0)
+                .align_y(iced::Alignment::Center);
+                body = body.push(row_button(line.into(), selected, Message::Navigate(screen)));
+            }
+        }
+        if !palette.settings.is_empty() {
+            body = body.push(container(section_label("Settings", scale)).padding([spacing::SM, 0.0]));
+            for (screen, entry) in palette.settings {
+                let selected = take_first();
+                // The page name in the text colour on the selected row,
+                // where dim text on the accent fill could not be read.
+                let crumb = hint_text(screen.title(), scale);
+                let crumb = if selected { crumb.color(text()) } else { crumb };
+                let line = row![
+                    scaled_text(entry.label, density::ROW_TEXT_BASE * 0.9, scale).color(text()),
+                    Space::new().width(Length::Fill),
+                    crumb,
+                ]
+                .spacing(spacing::SM)
+                .align_y(iced::Alignment::Center);
+                body = body.push(row_button(line.into(), selected, Message::Reveal(screen, entry.reveal)));
+            }
+        }
+        if !palette.keys.is_empty() {
+            body = body.push(container(section_label("Config keys", scale)).padding([spacing::SM, 0.0]));
+            for (screen, entry) in palette.keys {
+                let selected = take_first();
+                // The stored value in the plain text colour, not the
+                // mockup's green-for-true and red-for-false: a setting
+                // being off is not an error, and red is reserved for one.
+                let mut line = row![
+                    config_line(entry.key, scale).color(text()),
+                    Space::new().width(Length::Fill),
+                ]
+                .spacing(spacing::SM)
+                .align_y(iced::Alignment::Center);
+                let value = match entry.value {
+                    Some(v) => config_line(v, scale),
+                    None => hint_text("not set here", scale),
+                };
+                line = line.push(if selected { value.color(text()) } else { value });
+                body = body.push(row_button(line.into(), selected, Message::Reveal(screen, entry.reveal)));
+            }
+        }
+        if total == 0 {
+            body = body.push(
+                container(
+                    scaled_text(
+                        format!("Nothing matches \u{201c}{}\u{201d}.", self.search_query.trim()),
+                        density::META_TEXT_BASE,
+                        scale,
+                    )
+                    .color(text_dim()),
+                )
+                .padding([spacing::SM, 0.0]),
+            );
+        }
+        body = body.push(
+            container(config_line("⏎ go to the first result   esc dismiss", scale))
+                .padding(iced::Padding { top: spacing::SM, ..iced::Padding::default() }),
+        );
+
+        let card = container(body)
+            .padding(spacing::MD)
+            .max_width(PALETTE_WIDTH)
+            .width(Length::Fill)
+            .style(|_t: &Theme| container::Style {
+                background: Some(Background::Color(surface::card())),
+                border: iced::Border {
+                    radius: density::outer_radius().into(),
+                    width: 1.0,
+                    color: surface::card_border(),
+                },
+                shadow: iced::Shadow {
+                    color: iced::Color { a: 0.45, ..iced::Color::BLACK },
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 28.0,
+                },
+                ..container::Style::default()
+            });
+        container(card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .padding([spacing::SM, spacing::LG])
+            .into()
+    }
+
     /// The main window: the mockup's `1b` shell.
     ///
     /// A header bar across the top holding the app's mark and the search
@@ -1035,6 +1283,13 @@ impl App {
             page = page.push(pending_bar(p.summary, p.preview, p.discard, p.apply, scale));
         }
 
+        // The palette floats over the page while there is a query, so the
+        // page it would take you away from stays visible behind it.
+        let page: Element<'_, Message> = match self.search_query.trim().is_empty() {
+            true => page.into(),
+            false => iced::widget::stack![page, self.palette_view(scale)].into(),
+        };
+
         container(column![header, row![sidebar, page].height(Length::Fill)])
             .style(|_theme: &Theme| container::Style {
                 background: Some(Background::Color(surface::root())),
@@ -1072,9 +1327,10 @@ impl App {
         .align_y(iced::Alignment::Center);
 
         let search = search_field(
-            "Search settings",
+            "Search any setting or config key",
             &self.search_query,
             Message::SearchChanged,
+            Some(Message::SearchSubmit),
             Some(self.search_id.clone()),
             scale,
         )
@@ -1114,37 +1370,19 @@ impl App {
 
     /// The grouped list of pages down the left.
     ///
-    /// Filtered by the search field for now, by page title only; the
-    /// search palette that reaches every setting replaces this.
+    /// Never filtered by the search field: the palette answers searches,
+    /// and a sidebar that emptied itself while you typed would take away
+    /// the one map of the app that stays put.
     fn sidebar(&self, scale: FontScale) -> Element<'_, Message> {
-        let query = self.search_query.to_lowercase();
         let mut nav = column![].spacing(spacing::MD);
-        let mut any_visible = false;
         for category in NAV {
-            let visible: Vec<Screen> = category
-                .screens
-                .iter()
-                .copied()
-                .filter(|s| query.is_empty() || s.title().to_lowercase().contains(&query))
-                .collect();
-            if visible.is_empty() {
-                continue;
-            }
-            any_visible = true;
-
             let mut group = column![container(section_label(category.label, scale))
                 .padding([spacing::XS, spacing::SM + 2.0])]
             .spacing(1.0);
-            for screen in visible {
-                group = group.push(self.nav_item(screen, scale));
+            for screen in category.screens {
+                group = group.push(self.nav_item(*screen, scale));
             }
             nav = nav.push(group);
-        }
-        if !any_visible {
-            nav = nav.push(
-                container(scaled_text("No matches", density::META_TEXT_BASE, scale).color(text_dim()))
-                    .padding([0.0, spacing::SM + 2.0]),
-            );
         }
 
         container(
@@ -1201,7 +1439,7 @@ impl App {
     ///
     /// - `Ctrl+1` / `Ctrl+2` / `Ctrl+3` — switch to Monitors / Window Rules /
     ///   Shortcuts
-    /// - `Ctrl+F` — focus the sidebar search box
+    /// - `Ctrl+F` / `Ctrl+K` — focus the search field
     /// - `Ctrl+R` — refresh the active module
     /// - `Escape` — clear the search box if it has text, else cancel
     ///   whatever draft/dialog is open in the active module
@@ -1236,7 +1474,9 @@ impl App {
                 Key::Character("1") => Some(Message::Navigate(Screen::Monitors)),
                 Key::Character("2") => Some(Message::Navigate(Screen::WindowRules)),
                 Key::Character("3") => Some(Message::Navigate(Screen::Shortcuts)),
-                Key::Character("f") => Some(Message::FocusSearch),
+                // Ctrl+K is the mockup's, and the one most palettes use;
+                // Ctrl+F stays because it has always worked here.
+                Key::Character("f") | Key::Character("k") => Some(Message::FocusSearch),
                 Key::Character("r") => Some(Message::RefreshActive),
                 _ => None,
             }
@@ -1353,5 +1593,45 @@ mod cli_tests {
     fn an_unknown_screen_is_refused_rather_than_falling_back() {
         assert_eq!(screen_from_cli("bogus"), None);
         assert_eq!(screen_from_cli(""), None);
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    fn entry(label: &'static str, key: &'static str) -> SearchEntry<Message> {
+        SearchEntry { label, key, value: None, reveal: vec![Message::Noop] }
+    }
+
+    /// Enter takes the row drawn highlighted, and that is the first page,
+    /// then the first setting, then the first key — the order the palette
+    /// draws its groups in. If the two orders ever disagreed, Enter would
+    /// go somewhere other than where the highlight said.
+    #[test]
+    fn enter_takes_the_row_the_palette_highlights() {
+        let with_page = Palette {
+            pages: vec![Screen::Network],
+            settings: vec![(Screen::Input, entry("Natural scroll", "input:natural_scroll"))],
+            keys: vec![],
+        };
+        assert!(matches!(with_page.first(), Some(Message::Navigate(Screen::Network))));
+
+        let settings_first = Palette {
+            pages: vec![],
+            settings: vec![(Screen::Input, entry("Natural scroll", "input:natural_scroll"))],
+            keys: vec![(Screen::System, entry("Other", "misc:other"))],
+        };
+        assert!(matches!(settings_first.first(), Some(Message::Reveal(Screen::Input, _))));
+
+        let keys_only = Palette {
+            pages: vec![],
+            settings: vec![],
+            keys: vec![(Screen::System, entry("Other", "misc:other"))],
+        };
+        assert!(matches!(keys_only.first(), Some(Message::Reveal(Screen::System, _))));
+
+        let empty = Palette { pages: vec![], settings: vec![], keys: vec![] };
+        assert!(empty.first().is_none());
     }
 }

@@ -399,6 +399,24 @@ impl AppearanceModule {
 impl SettingsModule for AppearanceModule {
     type Message = Message;
 
+    /// The Hyprland half's settings. They live on the Windows tab, so
+    /// revealing one switches there before narrowing the filter.
+    fn search_entries(&self) -> Vec<crate::module::SearchEntry<Message>> {
+        CATALOG
+            .settings
+            .iter()
+            .map(|setting| crate::module::SearchEntry {
+                label: setting.label,
+                key: setting.key,
+                value: self.stored.settings.get(setting.key).map(crate::module::value_text),
+                reveal: vec![
+                    Message::TabSelected(Tab::Windows),
+                    Message::FilterChanged(setting.key.to_string()),
+                ],
+            })
+            .collect()
+    }
+
     /// The Hyprland drafts only. The desktop and animation rows each
     /// write through their own Set button, so nothing of theirs is ever
     /// held back for this bar to apply.

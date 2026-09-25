@@ -367,6 +367,24 @@ impl<M: Catalogued> CatalogScreen<M> {
 impl<M: Catalogued> SettingsModule for CatalogScreen<M> {
     type Message = Message;
 
+    /// Every catalogued setting, found by narrowing this page's own
+    /// filter to its key. The filter matches substrings, so that leaves
+    /// the picked row and any whose key extends it — `follow_mouse`
+    /// keeps `follow_mouse_threshold` beside it — which is a short list
+    /// with the right row in it, not a wrong one.
+    fn search_entries(&self) -> Vec<crate::module::SearchEntry<Message>> {
+        M::catalog()
+            .settings
+            .iter()
+            .map(|setting| crate::module::SearchEntry {
+                label: setting.label,
+                key: setting.key,
+                value: self.settings.get(setting.key).map(crate::module::value_text),
+                reveal: vec![Message::FilterChanged(setting.key.to_string())],
+            })
+            .collect()
+    }
+
     fn pending(&self) -> Option<crate::module::Pending<Message>> {
         (!self.drafts.is_empty()).then(|| crate::module::Pending {
             summary: hyprforge_ui::widgets::pending_label(self.drafts.len()),

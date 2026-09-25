@@ -52,6 +52,17 @@ pub trait SettingsModule {
         None
     }
 
+    /// Everything on this page the search palette can find, and how to
+    /// bring each one into view.
+    ///
+    /// Only pages whose settings come from a catalogue list anything:
+    /// those are the pages with dozens of settings and a key for each,
+    /// which is what searching by config key needs. Every page is found
+    /// by its title regardless — the shell does that part.
+    fn search_entries(&self) -> Vec<SearchEntry<Self::Message>> {
+        Vec::new()
+    }
+
     /// A short mark at the end of this page's sidebar entry: a count, an
     /// interface name, or a dot for a live connection.
     fn nav_badge(&self) -> Option<NavBadge> {
@@ -94,6 +105,44 @@ pub fn drafts_preview<'a>(mut drafts: impl Iterator<Item = (&'a str, &'a str)>) 
         0 => format!("{key} = {value}"),
         n => format!("{key} = {value}  +{n} more"),
     })
+}
+
+/// One setting the search palette can offer.
+#[derive(Debug, Clone)]
+pub struct SearchEntry<M> {
+    /// The setting's name, as its row shows it — "Focus follows mouse".
+    pub label: &'static str,
+    /// Its config key — `input:follow_mouse`.
+    pub key: &'static str,
+    /// What this page has stored for it, if anything. `None` is "not set
+    /// here", never "false".
+    pub value: Option<String>,
+    /// The messages that bring it into view on its page: switch to the
+    /// right tab, narrow the page's own filter to it.
+    pub reveal: Vec<M>,
+}
+
+impl<M> SearchEntry<M> {
+    /// Maps the messages into the shell's own.
+    pub fn map<N>(self, f: impl Fn(M) -> N) -> SearchEntry<N> {
+        SearchEntry {
+            label: self.label,
+            key: self.key,
+            value: self.value,
+            reveal: self.reveal.into_iter().map(f).collect(),
+        }
+    }
+}
+
+/// A stored value as the palette shows it — `true`, `12`, `rgba(...)`.
+pub fn value_text(value: &hyprforge_core::hlconfig::Value) -> String {
+    use hyprforge_core::hlconfig::Value;
+    match value {
+        Value::Bool(b) => b.to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Text(t) => t.clone(),
+    }
 }
 
 /// What a sidebar entry can carry beside its label.

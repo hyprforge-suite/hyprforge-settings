@@ -21,7 +21,7 @@
 use hyprforge_core::lua_setup;
 use hyprforge_ui::theme::{spacing, FontScale};
 use hyprforge_ui::widgets::{
-    divider, meta_text, primary_button, scaled_text, secondary_button, section,
+    meta_text, primary_button, scaled_text, secondary_button, section,
 };
 use super::setting_rows::{self, DynChoice, RowContext};
 use crate::modules::setup_notice::setup_notice;
@@ -367,6 +367,12 @@ impl<M: Catalogued> CatalogScreen<M> {
 impl<M: Catalogued> SettingsModule for CatalogScreen<M> {
     type Message = Message;
 
+    /// Import reads Hyprland's own config into this page, so it sits on
+    /// the title row — where the other Hyprland pages keep it.
+    fn header_actions(&self, _scale: FontScale) -> Option<Element<'_, Message>> {
+        Some(secondary_button("Import from Hyprland").on_press(Message::ImportOpen).into())
+    }
+
     /// Every catalogued setting, found by narrowing this page's own
     /// filter to its key. The filter matches substrings, so that leaves
     /// the picked row and any whose key extends it — `follow_mouse`
@@ -591,14 +597,10 @@ impl<M: Catalogued> SettingsModule for CatalogScreen<M> {
         }
 
         content = content.push(
-            row![
-                text_input("Filter settings…", &self.filter)
-                    .on_input(Message::FilterChanged)
-                    .padding(spacing::SM),
-                secondary_button("Import from Hyprland").on_press(Message::ImportOpen),
-            ]
-            .spacing(spacing::MD)
-            .align_y(iced::Alignment::Center),
+            text_input("Filter settings…", &self.filter)
+                .on_input(Message::FilterChanged)
+                .padding(spacing::SM)
+                .style(hyprforge_ui::widgets::inset_input_style),
         );
 
         let mut any_row = false;
@@ -610,12 +612,12 @@ impl<M: Catalogued> SettingsModule for CatalogScreen<M> {
                 continue;
             }
             any_row = true;
-            let mut body = column![meta_text(category.help, 12.0, scale)].spacing(spacing::SM);
-            for setting in rows {
-                body = body.push(divider());
-                body = body.push(self.setting_row(setting, scale));
-            }
-            content = content.push(section(category.label, scale, body));
+            let rows: Vec<Element<'_, Message>> = rows
+                .into_iter()
+                .enumerate()
+                .map(|(i, setting)| self.setting_row(setting, i, scale))
+                .collect();
+            content = content.push(setting_rows::category_group(category.label, category.help, rows, scale));
         }
 
         if !any_row {
@@ -665,8 +667,13 @@ impl<M: Catalogued> CatalogScreen<M> {
         }
     }
 
-    pub(crate) fn setting_row(&self, setting: &'static Setting, scale: FontScale) -> Element<'_, Message> {
-        self.rows().row(setting, scale)
+    pub(crate) fn setting_row(
+        &self,
+        setting: &'static Setting,
+        index: usize,
+        scale: FontScale,
+    ) -> Element<'_, Message> {
+        self.rows().row(setting, index, scale)
     }
 
     fn import_view(&self, review: &ImportState, scale: FontScale) -> Element<'_, Message> {

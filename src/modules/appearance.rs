@@ -758,7 +758,8 @@ impl SettingsModule for AppearanceModule {
             content = content.push(
                 text_input("Filter settings…", &self.filter)
                     .on_input(Message::FilterChanged)
-                    .padding(spacing::SM),
+                    .padding(spacing::SM)
+                    .style(hyprforge_ui::widgets::inset_input_style),
             );
         }
 
@@ -946,12 +947,12 @@ impl AppearanceModule {
                 continue;
             }
             any = true;
-            let mut body = column![meta_text(category.help, 12.0, scale)].spacing(spacing::SM);
-            for setting in settings {
-                body = body.push(divider());
-                body = body.push(rows.row(setting, scale));
-            }
-            content = content.push(section(category.label, scale, body));
+            let body: Vec<Element<'_, Message>> = settings
+                .into_iter()
+                .enumerate()
+                .map(|(i, setting)| rows.row(setting, i, scale))
+                .collect();
+            content = content.push(super::setting_rows::category_group(category.label, category.help, body, scale));
         }
 
         if !any {
@@ -1869,7 +1870,7 @@ mod tests {
         with_temp_config(|m| {
             let rows = m.rows();
             for setting in CATALOG.settings {
-                let _ = rows.row(setting, FontScale::default());
+                let _ = rows.row(setting, 0, FontScale::default());
             }
         });
     }

@@ -16,9 +16,14 @@
 
 use hyprforge_core::hlconfig::import::Live;
 use hyprforge_core::hlconfig::{Kind, Setting, Settings, Value};
-use hyprforge_ui::theme::{spacing, FontScale, BASE_TEXT_SIZE};
-use hyprforge_ui::widgets::{danger_button, meta_text, scaled_text};
-use iced::widget::{checkbox, column, container, pick_list, row, text_input};
+use hyprforge_ui::density;
+use hyprforge_ui::theme::{self, spacing, surface, FontScale};
+use hyprforge_ui::widgets::{
+    chip, config_line, dropdown_menu_style, dropdown_style, hint_text, inset_input_style, scaled_text,
+    secondary_button, section_label, segmented_choice, setting_list, setting_row, toggle,
+    value_slider, Tint,
+};
+use iced::widget::{column, container, pick_list, row, text_input, tooltip};
 use iced::{Element, Length};
 use std::collections::BTreeMap;
 
@@ -35,12 +40,20 @@ pub enum Source {
 }
 
 impl Source {
-    pub fn label(self) -> &'static str {
+    /// What the chip beside a row's config line says.
+    pub fn short_label(self) -> &'static str {
         match self {
-            Source::Owned => "Set by Hyprforge",
-            Source::UserConfig => "From your Hyprland config",
-            Source::Default => "Hyprland default",
+            Source::Owned => "set by hyprforge",
+            Source::UserConfig => "your config",
+            Source::Default => "hyprland default",
         }
+    }
+
+    /// Always dim. Where a value came from is not a state — nothing is
+    /// wrong with a default — so it gets no state colour, and the words
+    /// are what tell the three apart.
+    pub fn tint(self) -> Tint {
+        Tint::Dim
     }
 }
 
@@ -116,7 +129,11 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
         render_for_edit(&self.effective(setting).0)
     }
 
-    pub fn row(&self, setting: &'static Setting, scale: FontScale) -> Element<'a, M> {
+    /// One setting as a striped row: its name, the line it writes, where
+    /// the value comes from, and a control chosen from its kind.
+    ///
+    /// `index` is its place in its group, for the alternating stripe.
+    pub fn row(&self, setting: &'static Setting, index: usize, scale: FontScale) -> Element<'a, M> {
         let key = setting.key;
         let owned = self.owns(key);
         let (current, source) = self.effective(setting);
@@ -135,16 +152,17 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
             let control = pick_list(options, selected, move |c: DynChoice| {
                 on_set(key, Value::Text(c.value))
             })
+            .style(dropdown_style)
+            .menu_style(dropdown_menu_style)
+                        .width(Length::Fixed(scale.apply(TEXT_FIELD_WIDTH)))
             .into();
-            return self.wrap(setting, control, source, owned, scale);
+            return self.wrap(setting, &current, control, source, owned, index, scale);
         }
 
         let control: Element<'a, M> = match setting.kind {
             Kind::Bool { default } => {
                 let current = current.as_bool().unwrap_or(default);
-                checkbox(current)
-                    .on_toggle(move |b| on_set(key, Value::Bool(b)))
-                    .into()
+                toggle(current, scale).on_toggle(move |b| on_set(key, Value::Bool(b))).into()
             }
             Kind::IntEnum { default, choices } => {
                 let current = current.as_int().unwrap_or(default);
@@ -153,25 +171,73 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
                     .map(|(v, label)| Choice { value: *v, label })
                     .collect();
                 let selected = options.iter().find(|c| c.value == current).copied();
-                pick_list(options, selected, move |c: Choice| {
-                    on_set(key, Value::Int(c.value))
-                })
-                .into()
+                if fits_segments(options.iter().map(|c| c.label)) {
+                    segmented_choice(&options, selected.as_ref(), |c| c.label.to_string(), move |c| {
+                        on_set(key, Value::Int(c.value))
+                    }, scale)
+                } else {
+                    pick_list(options, selected, move |c: Choice| on_set(key, Value::Int(c.value)))
+                        .style(dropdown_style)
+                        .menu_style(dropdown_menu_style)
+                        .width(Length::Fixed(scale.apply(TEXT_FIELD_WIDTH)))
+                        .into()
+                }
             }
             Kind::TextEnum { default, choices } => {
                 let current = current.as_text().unwrap_or(default).to_string();
                 let options: Vec<TextChoice> =
                     choices.iter().map(|c| TextChoice { value: c }).collect();
                 let selected = options.iter().find(|c| c.value == current.as_str()).copied();
-                pick_list(options, selected, move |c: TextChoice| {
-                    on_set(key, Value::Text(c.value.to_string()))
-                })
-                .into()
+                if fits_segments(options.iter().map(|c| c.value)) {
+                    segmented_choice(&options, selected.as_ref(), |c| c.value.to_string(), move |c| {
+                        on_set(key, Value::Text(c.value.to_string()))
+                    }, scale)
+                } else {
+                    pick_list(options, selected, move |c: TextChoice| {
+                        on_set(key, Value::Text(c.value.to_string()))
+                    })
+                    .style(dropdown_style)
+                    .menu_style(dropdown_menu_style)
+                        .width(Length::Fixed(scale.apply(TEXT_FIELD_WIDTH)))
+                    .into()
+                }
+            }
+            Kind::Int { min: Some(min), max: Some(max), .. } if slides(min as f64, max as f64) => {
+                // A drag drafts, and letting go applies — the same as
+                // typing a number and pressing Enter. Writing on every
+                // step would rewrite the config once per pixel dragged.
+                let shown = self.shown_text(setting).trim().parse::<f64>().ok();
+                let value = shown.unwrap_or(current.as_float().unwrap_or(min as f64));
+                value_slider(
+                    min as f32..=max as f32,
+                    value.clamp(min as f64, max as f64) as f32,
+                    1.0,
+                    move |v| on_draft(key, (v.round() as i64).to_string()),
+                    Some(self.on_submit.clone()),
+                    format!("{}", value.round() as i64),
+                    scale,
+                )
+            }
+            Kind::Float { min: Some(min), max: Some(max), .. } if slides(min, max) => {
+                let shown = self.shown_text(setting).trim().parse::<f64>().ok();
+                let value = shown.unwrap_or(current.as_float().unwrap_or(min));
+                let step = float_step(min, max);
+                value_slider(
+                    min as f32..=max as f32,
+                    value.clamp(min, max) as f32,
+                    step as f32,
+                    move |v| on_draft(key, format_float(v as f64, step)),
+                    Some(self.on_submit.clone()),
+                    format_float(value, step),
+                    scale,
+                )
             }
             _ => text_input(&placeholder_for(&setting.kind), &self.shown_text(setting))
                 .on_input(move |raw| on_draft(key, raw))
                 .on_submit(self.on_submit.clone())
                 .padding(spacing::SM)
+                .style(inset_input_style)
+                .width(Length::Fixed(scale.apply(TEXT_FIELD_WIDTH)))
                 .into(),
         };
 
@@ -181,7 +247,7 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
         let control: Element<'a, M> = match setting.kind {
             Kind::Color { .. } | Kind::ColorInt { .. } => row![
                 swatch(current.as_text().unwrap_or_default()),
-                container(control).width(Length::Fill),
+                control,
             ]
             .spacing(spacing::SM)
             .align_y(iced::Alignment::Center)
@@ -189,50 +255,150 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
             _ => control,
         };
 
-        self.wrap(setting, control, source, owned, scale)
+        self.wrap(setting, &current, control, source, owned, index, scale)
     }
 
-    /// The label stack and Reset button every row shares, whatever
-    /// control sits in it.
+    /// The row every control sits in: the name (with its help on hover),
+    /// the config line it writes, where the value comes from, and the
+    /// Reset button when Hyprforge owns the key.
+    #[allow(clippy::too_many_arguments)]
     fn wrap(
         &self,
         setting: &'static Setting,
+        current: &Value,
         control: Element<'a, M>,
         source: Source,
         owned: bool,
+        index: usize,
         scale: FontScale,
     ) -> Element<'a, M> {
         let key = setting.key;
         let on_reset = self.on_reset;
-        let mut label_side = column![scaled_text(setting.label, BASE_TEXT_SIZE, scale)].spacing(2);
-        label_side = label_side.push(meta_text(setting.help, 12.0, scale));
-        if let Some(problem) = self.draft_errors.get(key) {
-            label_side = label_side.push(scaled_text(problem.clone(), 12.0, scale));
-        }
-        label_side = label_side.push(meta_text(source.label(), 12.0, scale));
 
-        let control_side: Element<'a, M> = if owned {
-            row![
-                container(control).width(Length::Fill),
-                danger_button("Reset", on_reset(key)),
-            ]
-            .spacing(spacing::SM)
-            .align_y(iced::Alignment::Center)
-            .into()
+        // The config line and the source, together: the line is what the
+        // setting is, the chip says whose it is. Always both — the chip
+        // on a default is what stops a row claiming a value is the user's
+        // when Hyprland is only doing what it does unasked (see the
+        // module doc).
+        let mut hint = column![row![
+            config_line(config_text(key, current), scale),
+            chip(source.short_label(), source.tint(), scale),
+        ]
+        .spacing(spacing::SM)
+        .align_y(iced::Alignment::Center)]
+        .spacing(2.0);
+        if let Some(problem) = self.draft_errors.get(key) {
+            hint = hint.push(hint_text(problem.clone(), scale).color(theme::error()));
+        }
+
+        let control: Element<'a, M> = if owned {
+            row![control, secondary_button("Reset").on_press(on_reset(key))]
+                .spacing(spacing::SM)
+                .align_y(iced::Alignment::Center)
+                .into()
         } else {
             control
         };
 
-        // Laid out like `widgets::row_field`, but built here because the
-        // label is a stack (name, help, source) rather than one string.
-        row![
-            container(label_side).width(Length::FillPortion(2)),
-            container(control_side).width(Length::FillPortion(3)),
-        ]
-        .spacing(spacing::MD)
-        .align_y(iced::Alignment::Center)
-        .into()
+        // The help moves into a tooltip on the row. It was a line of its
+        // own under every label, which made a page of fifty settings
+        // mostly explanation; the mockup's rows are one line and a config
+        // line, and the text is still one hover — or one search — away.
+        let body = setting_row(index, setting.label, Some(hint.into()), control, scale);
+        if setting.help.trim().is_empty() {
+            return body;
+        }
+        tooltip(body, help_bubble(setting.help, scale), tooltip::Position::Bottom)
+            .gap(spacing::XS)
+            .into()
     }
+}
+
+/// A row's config line: `key = value`, with an empty value written as
+/// `""` — a bare `key = ` reads as a line that failed to draw.
+fn config_text(key: &str, value: &Value) -> String {
+    match render_for_edit(value) {
+        v if v.is_empty() => format!("{key} = \"\""),
+        v => format!("{key} = {v}"),
+    }
+}
+
+/// A category: its heading, one line on what it covers, and its rows.
+///
+/// A heading over a striped stack, not a bordered card with dividers:
+/// the stripe is what separates the rows now, and a card around them
+/// was a second frame doing the same job.
+pub fn category_group<'a, M: 'a>(
+    label: &str,
+    help: &'a str,
+    rows: Vec<Element<'a, M>>,
+    scale: FontScale,
+) -> Element<'a, M> {
+    let mut group = column![section_label(label, scale)].spacing(spacing::SM);
+    if !help.trim().is_empty() {
+        group = group.push(hint_text(help, scale));
+    }
+    group.push(setting_list(rows)).into()
+}
+
+/// A setting's help, as a small card under the row it explains.
+fn help_bubble<'a, M: 'a>(help: &'a str, scale: FontScale) -> Element<'a, M> {
+    container(hint_text(help, scale).color(theme::text()))
+        .padding([spacing::XS, spacing::SM])
+        .max_width(scale.apply(HELP_BUBBLE_WIDTH))
+        .style(|_t: &iced::Theme| container::Style {
+            background: Some(iced::Background::Color(surface::card())),
+            border: iced::Border {
+                radius: density::inner_radius().into(),
+                width: 1.0,
+                color: surface::card_border(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// How wide a help tooltip grows before it wraps.
+const HELP_BUBBLE_WIDTH: f32 = 420.0;
+
+/// A free-text field's width, and a dropdown's: enough for a path, a
+/// comma list or a layout's name, and fixed so a control does not
+/// stretch across the row and squeeze its own label.
+const TEXT_FIELD_WIDTH: f32 = 240.0;
+
+/// The widest span a number gets a slider for. Past this a pixel of
+/// drag is several units, and typing the number is the better control —
+/// a timeout in milliseconds wants a field, a gap in pixels a slider.
+const SLIDER_MAX_SPAN: f64 = 400.0;
+
+/// Whether a bounded number is better as a slider than a field.
+fn slides(min: f64, max: f64) -> bool {
+    min.is_finite() && max.is_finite() && max > min && max - min <= SLIDER_MAX_SPAN
+}
+
+/// A float slider's step: a hundredth of its span, rounded to a power of
+/// ten so the readout shows round numbers — 0.01 over a span of 1, 0.1
+/// over a span of 10.
+fn float_step(min: f64, max: f64) -> f64 {
+    let raw = (max - min) / 100.0;
+    10f64.powf(raw.log10().floor())
+}
+
+/// A float as its slider step shows it: as many decimals as the step
+/// has, so a 0.01 step reads `0.35` and never `0.35000001`.
+fn format_float(value: f64, step: f64) -> String {
+    let decimals = (-step.log10()).ceil().max(0.0) as usize;
+    format!("{value:.decimals$}")
+}
+
+/// Whether a set of options reads as a segmented control: three or
+/// fewer, each short. A fourth option, or one long label, and the row
+/// runs out of room — a dropdown is the honest control then.
+fn fits_segments<'s>(labels: impl Iterator<Item = &'s str>) -> bool {
+    const MAX_SEGMENTS: usize = 3;
+    const MAX_SEGMENT_LABEL: usize = 12;
+    let labels: Vec<&str> = labels.collect();
+    labels.len() <= MAX_SEGMENTS && labels.iter().all(|l| l.chars().count() <= MAX_SEGMENT_LABEL)
 }
 
 /// A settings row: a label on the left, a control on the right, in the
@@ -493,9 +659,51 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_value_is_written_as_empty_quotes() {
+        assert_eq!(config_text("input:kb_variant", &Value::Text(String::new())), "input:kb_variant = \"\"");
+        assert_eq!(config_text("general:gaps_in", &Value::Int(5)), "general:gaps_in = 5");
+    }
+
+    /// The three chips share a colour, so their words are the only thing
+    /// telling "Hyprforge writes this" from "your config says this" from
+    /// "nobody set it" — and a row that blurs those lies about what is
+    /// running (see the module doc).
+    #[test]
     fn the_three_sources_have_distinct_labels() {
-        let labels = [Source::Owned, Source::UserConfig, Source::Default].map(Source::label);
+        let labels = [Source::Owned, Source::UserConfig, Source::Default].map(Source::short_label);
         let unique: std::collections::HashSet<_> = labels.iter().collect();
         assert_eq!(unique.len(), 3);
+    }
+
+    /// A gap in pixels gets a slider; a timeout in milliseconds, where a
+    /// pixel of drag would be several units, keeps its field. So does
+    /// anything without both ends, which a slider cannot draw.
+    #[test]
+    fn only_a_short_bounded_range_gets_a_slider() {
+        assert!(slides(0.0, 50.0));
+        assert!(slides(-1.0, 1.0));
+        assert!(!slides(0.0, 10_000.0));
+        assert!(!slides(5.0, 5.0), "no range to slide over");
+        assert!(!slides(0.0, f64::INFINITY));
+    }
+
+    /// A float slider moves in round steps and says so without float
+    /// noise — `0.35`, never `0.35000001`.
+    #[test]
+    fn a_float_slider_steps_and_reads_in_round_numbers() {
+        assert_eq!(float_step(0.0, 1.0), 0.01);
+        assert_eq!(float_step(-1.0, 1.0), 0.01);
+        assert_eq!(float_step(0.0, 10.0), 0.1);
+        assert_eq!(format_float(0.35000001, 0.01), "0.35");
+        assert_eq!(format_float(3.0, 0.1), "3.0");
+    }
+
+    /// Three short options fit a row as segments; a fourth, or one long
+    /// label, and they would not.
+    #[test]
+    fn only_a_few_short_options_become_segments() {
+        assert!(fits_segments(["Off", "Always", "Fullscreen"].into_iter()));
+        assert!(!fits_segments(["a", "b", "c", "d"].into_iter()));
+        assert!(!fits_segments(["Off", "Keep fullscreen and focus behind it"].into_iter()));
     }
 }

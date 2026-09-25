@@ -445,7 +445,7 @@ mod tests {
     fn every_catalogued_setting_produces_a_row() {
         with_temp_config(|m| {
             for setting in CATALOG.settings {
-                let _ = m.setting_row(setting, FontScale::default());
+                let _ = m.setting_row(setting, 0, FontScale::default());
             }
         });
     }

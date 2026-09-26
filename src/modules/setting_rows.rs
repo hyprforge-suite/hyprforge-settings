@@ -19,7 +19,7 @@ use hyprforge_core::hlconfig::{Kind, Setting, Settings, Value};
 use hyprforge_ui::density;
 use hyprforge_ui::theme::{self, spacing, surface, FontScale};
 use hyprforge_ui::widgets::{
-    chip, config_line, dropdown_menu_style, dropdown_style, hint_text, inset_input_style, scaled_text,
+    chip, config_line, dropdown_menu_style, dropdown_style, hint_text, inset_input_style,
     secondary_button, section_label, segmented_choice, setting_list, setting_row, toggle,
     value_slider, Tint,
 };
@@ -401,8 +401,7 @@ fn fits_segments<'s>(labels: impl Iterator<Item = &'s str>) -> bool {
     labels.len() <= MAX_SEGMENTS && labels.iter().all(|l| l.chars().count() <= MAX_SEGMENT_LABEL)
 }
 
-/// A settings row: a label on the left, a control on the right, in the
-/// 2:3 split every screen in this app uses.
+/// A settings row: a label on the left, a control on the right.
 ///
 /// Generic over the message type because each module has its own. It
 /// lives here because it was written out four times — `desktop.rs`,
@@ -411,21 +410,25 @@ fn fits_segments<'s>(labels: impl Iterator<Item = &'s str>) -> bool {
 /// meant four edits to keep the screens looking like one app. That is
 /// the drift CLAUDE.md names when two screens grew their own palettes.
 ///
-/// `hyprforge_ui::widgets::row_field` is deliberately not used: it
-/// takes plain `text` rather than `scaled_text` and caps the control's
-/// width, so it renders differently.
+/// It and `hyprforge_ui::widgets::row_field` draw the same row now —
+/// both are `setting_row` underneath — and differ only in whether the
+/// caller passes the scale.
 pub fn labelled<'a, M: 'a>(
     label: &'a str,
     control: Element<'a, M>,
     scale: FontScale,
 ) -> Element<'a, M> {
-    row![
-        container(scaled_text(label, 13.0, scale)).width(Length::FillPortion(2)),
-        container(control).width(Length::FillPortion(3)),
-    ]
-    .spacing(spacing::MD)
-    .align_y(iced::Alignment::Center)
-    .into()
+    // The shared setting row now, like `widgets::row_field`: label at
+    // one end, control at the other, capped at a field's width so a
+    // stretching control does not squeeze its label. Unstriped, because
+    // it is not told its place in a list.
+    setting_row(
+        1,
+        label,
+        None,
+        container(control).max_width(scale.apply(TEXT_FIELD_WIDTH + 100.0)),
+        scale,
+    )
 }
 
 /// The options a picker should offer, with `current` kept even when it

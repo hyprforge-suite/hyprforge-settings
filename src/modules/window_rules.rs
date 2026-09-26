@@ -1571,15 +1571,8 @@ impl WindowRulesModule {
                 .extend(pin_actions)
                 .spacing(spacing::SM)
                 .align_y(iced::Alignment::Center),
-                row![
-                    checkbox(pin.default)
-                        .label("Default workspace for that monitor")
-                        .on_toggle(move |v| Message::PinDefault(i, v)),
-                    checkbox(pin.persistent)
-                        .label("Keep alive when empty")
-                        .on_toggle(move |v| Message::PinPersistent(i, v)),
-                ]
-                .spacing(spacing::MD),
+                row_field("Default workspace for that monitor", toggle(pin.default, scale).on_toggle(move |v| Message::PinDefault(i, v))),
+                row_field("Keep alive when empty", toggle(pin.persistent, scale).on_toggle(move |v| Message::PinPersistent(i, v))),
             ]
             .spacing(spacing::XS);
             // A pin with no workspace names nothing, so codegen skips it —
@@ -1733,13 +1726,9 @@ impl WindowRulesModule {
                 text_input("e.g. 3, name:coding, special:scratchpad", &draft.workspace)
                     .on_input(Message::DraftWorkspace),
             ),
-            checkbox(draft.workspace_silent)
-                .label("Open there without switching to it")
-                .on_toggle(Message::DraftWorkspaceSilent),
-            checkbox(draft.float).label("Float").on_toggle(Message::DraftFloat),
-            checkbox(draft.no_blur)
-                .label("Disable blur")
-                .on_toggle(Message::DraftNoBlur),
+            row_field("Open there without switching to it", toggle(draft.workspace_silent, scale).on_toggle(Message::DraftWorkspaceSilent)),
+            row_field("Float", toggle(draft.float, scale).on_toggle(Message::DraftFloat)),
+            row_field("Disable blur", toggle(draft.no_blur, scale).on_toggle(Message::DraftNoBlur)),
             row_field(
                 "Rounding (px)",
                 text_input("e.g. 8", &draft.rounding).on_input(Message::DraftRounding),
@@ -1753,7 +1742,10 @@ impl WindowRulesModule {
         .spacing(spacing::MD);
 
         let mut body = column![
-            scaled_text(title, 22.0, scale),
+            // A heading, not a second page title: the shell already says
+            // "Window rules" above this.
+            scaled_text(title, 16.0, scale)
+                .font(iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT }),
             section("Rule", scale, form),
         ]
         .spacing(spacing::LG)
@@ -1872,9 +1864,7 @@ impl WindowRulesModule {
                         text_input("1.0", &draft.opacity_fullscreen)
                             .on_input(Message::DraftOpacityFullscreen),
                     ),
-                    checkbox(draft.opacity_override)
-                        .label("Absolute (override) rather than multiplied")
-                        .on_toggle(Message::DraftOpacityOverride),
+                    row_field("Absolute (override) rather than multiplied", toggle(draft.opacity_override, scale).on_toggle(Message::DraftOpacityOverride)),
                 ]
                 .spacing(spacing::MD),
             ));
@@ -1883,15 +1873,9 @@ impl WindowRulesModule {
                 "Appearance",
                 scale,
                 column![
-                    checkbox(draft.opaque)
-                        .label("Force opaque")
-                        .on_toggle(Message::DraftOpaque),
-                    checkbox(draft.no_anim)
-                        .label("Disable animations")
-                        .on_toggle(Message::DraftNoAnim),
-                    checkbox(draft.dim_around)
-                        .label("Dim everything around it")
-                        .on_toggle(Message::DraftDimAround),
+                    row_field("Force opaque", toggle(draft.opaque, scale).on_toggle(Message::DraftOpaque)),
+                    row_field("Disable animations", toggle(draft.no_anim, scale).on_toggle(Message::DraftNoAnim)),
+                    row_field("Dim everything around it", toggle(draft.dim_around, scale).on_toggle(Message::DraftDimAround)),
                     row_field(
                         "Border size (px)",
                         text_input("e.g. 4 — 0 removes the border", &draft.border_size)
@@ -1910,15 +1894,9 @@ impl WindowRulesModule {
                 "Focus & sizing",
                 scale,
                 column![
-                    checkbox(draft.no_focus)
-                        .label("Never focus this window")
-                        .on_toggle(Message::DraftNoFocus),
-                    checkbox(draft.stay_focused)
-                        .label("Keep focus while visible")
-                        .on_toggle(Message::DraftStayFocused),
-                    checkbox(draft.keep_aspect_ratio)
-                        .label("Keep aspect ratio when resizing")
-                        .on_toggle(Message::DraftKeepAspectRatio),
+                    row_field("Never focus this window", toggle(draft.no_focus, scale).on_toggle(Message::DraftNoFocus)),
+                    row_field("Keep focus while visible", toggle(draft.stay_focused, scale).on_toggle(Message::DraftStayFocused)),
+                    row_field("Keep aspect ratio when resizing", toggle(draft.keep_aspect_ratio, scale).on_toggle(Message::DraftKeepAspectRatio)),
                     row_field(
                         "Idle inhibit",
                         iced::widget::pick_list(
@@ -1964,22 +1942,12 @@ impl WindowRulesModule {
                 "How it opens",
                 scale,
                 column![
-                    checkbox(draft.tile).label("Open tiled").on_toggle(Message::DraftTile),
-                    checkbox(draft.fullscreen_effect)
-                        .label("Open fullscreen")
-                        .on_toggle(Message::DraftFullscreenEffect),
-                    checkbox(draft.maximize)
-                        .label("Open maximized")
-                        .on_toggle(Message::DraftMaximize),
-                    checkbox(draft.center)
-                        .label("Center it")
-                        .on_toggle(Message::DraftCenter),
-                    checkbox(draft.pin)
-                        .label("Pin above workspaces (floating windows only)")
-                        .on_toggle(Message::DraftPin),
-                    checkbox(draft.no_initial_focus)
-                        .label("Don't focus it when it opens")
-                        .on_toggle(Message::DraftNoInitialFocus),
+                    row_field("Open tiled", toggle(draft.tile, scale).on_toggle(Message::DraftTile)),
+                    row_field("Open fullscreen", toggle(draft.fullscreen_effect, scale).on_toggle(Message::DraftFullscreenEffect)),
+                    row_field("Open maximized", toggle(draft.maximize, scale).on_toggle(Message::DraftMaximize)),
+                    row_field("Center it", toggle(draft.center, scale).on_toggle(Message::DraftCenter)),
+                    row_field("Pin above workspaces (floating windows only)", toggle(draft.pin, scale).on_toggle(Message::DraftPin)),
+                    row_field("Don't focus it when it opens", toggle(draft.no_initial_focus, scale).on_toggle(Message::DraftNoInitialFocus)),
                     row_field(
                         "Monitor",
                         iced::widget::pick_list(

@@ -1,8 +1,11 @@
 use hyprforge_core::lua_setup;
+use hyprforge_ui::density;
 use hyprforge_ui::theme::{spacing, FontScale, BASE_TEXT_SIZE};
 use hyprforge_ui::widgets::{
-    danger_button, divider, meta_text, primary_button, row_field, scaled_text, secondary_button,
-    section,
+    config_line, danger_button, dropdown_menu_style, dropdown_style, hint_text, inset_input_style,
+    keycap, meta_text, primary_button, scaled_text, secondary_button, section, section_label,
+    segment_style, setting_list, setting_row, setting_row_style, toggle, SegmentLook,
+    SETTING_ROW_GAP,
 };
 use crate::module::SettingsModule;
 use hyprforge_shortcuts::binds::LiveBind;
@@ -10,7 +13,7 @@ use hyprforge_shortcuts::catalog::{self, Category, Entry, ParamKind};
 use hyprforge_shortcuts::model::{description_for, generate_shortcut_name};
 use hyprforge_shortcuts::setup::{HyprConfig, SetupPlan};
 use hyprforge_shortcuts::{codegen, lua, Action, BindFlags, KeyCombo, Modifier, ParamValue, Shortcut};
-use iced::widget::{checkbox, column, container, row, scrollable, text_input};
+use iced::widget::{checkbox, column, container, row, text_input};
 use iced::{Element, Length, Task};
 use std::collections::BTreeMap;
 
@@ -808,10 +811,34 @@ impl ShortcutsModule {
 impl SettingsModule for ShortcutsModule {
     type Message = Message;
 
+    /// Import and Add act on the whole list, so they sit on the title row
+    /// — the mockup's "+ New bind".
+    fn header_actions(&self, _scale: FontScale) -> Option<Element<'_, Message>> {
+        if self.draft.is_some() || self.import_review.is_some() {
+            return None;
+        }
+        Some(
+            row![
+                secondary_button("Import from config").on_press(Message::ImportFromConfig),
+                primary_button("+ New bind").on_press(Message::Add),
+            ]
+            .spacing(spacing::SM)
+            .into(),
+        )
+    }
+
+    /// How many binds, and how many collide with one the compositor
+    /// already has — the mockup's "86 binds · 1 conflict".
     fn subtitle(&self) -> Option<String> {
-        Some(match self.shortcuts.len() {
-            1 => "1 bind".into(),
+        let binds = match self.shortcuts.len() {
+            1 => "1 bind".to_string(),
             n => format!("{n} binds"),
+        };
+        let conflicts = self.shortcuts.iter().filter(|s| !self.conflicts_for(s).is_empty()).count();
+        Some(match conflicts {
+            0 => binds,
+            1 => format!("{binds} · 1 conflict"),
+            n => format!("{binds} · {n} conflicts"),
         })
     }
 
@@ -1187,115 +1214,172 @@ impl SettingsModule for ShortcutsModule {
         }
 
         let groups = self.grouped();
-        let mut list = column![].spacing(spacing::SM);
+        let mut list = column![].spacing(spacing::MD);
         if self.shortcuts.is_empty() {
             list = list.push(meta_text("No shortcuts yet.", BASE_TEXT_SIZE, scale));
         } else if groups.is_empty() {
             list = list.push(meta_text("No shortcuts match that.", BASE_TEXT_SIZE, scale));
+        } else {
+            list = list.push(table_header(scale));
         }
 
-        for (group_index, (category, rows)) in groups.into_iter().enumerate() {
-            if group_index > 0 {
-                list = list.push(divider());
-            }
-            let header = match category {
-                Some(c) => c.label().to_uppercase(),
-                None => "OTHER".to_string(),
+        for (category, rows) in groups {
+            let heading = match category {
+                Some(c) => c.label(),
+                None => "Other",
             };
-            list = list.push(meta_text(header, 11.0, scale));
+            let mut group = column![section_label(heading, scale)].spacing(SETTING_ROW_GAP);
 
-            for row in rows {
-                let Row { index: i, shortcut, .. } = row;
-                let label = if shortcut.description.trim().is_empty() {
-                    shortcut.combo.to_bind_string()
+            for (stripe, entry) in rows.into_iter().enumerate() {
+                let Row { index: i, shortcut, .. } = entry;
+                let description = if shortcut.description.trim().is_empty() {
+                    entry.action_label()
                 } else {
                     shortcut.description.clone()
                 };
-                let mut info = column![
-                    scaled_text(label, BASE_TEXT_SIZE, scale),
-                    meta_text(
-                        format!("{}  →  {}", shortcut.combo.to_bind_string(), row.action_label()),
-                        12.0,
-                        scale,
-                    ),
-                ]
-                .spacing(spacing::XS)
-                .width(Length::Fill);
-
                 let conflicts = self.conflicts_for(shortcut);
+
+                // The chord as keycaps: the shape is what the eye finds
+                // going down a table, before it reads any word.
+                let keys = row(shortcut
+                    .combo
+                    .to_bind_string()
+                    .split(" + ")
+                    .map(|part| keycap(part.to_string(), scale)))
+                .spacing(spacing::XS)
+                .align_y(iced::Alignment::Center);
+
+                let mut what = column![scaled_text(description, density::ROW_TEXT_BASE * 0.9, scale)
+                    .color(hyprforge_ui::theme::text())]
+                .spacing(2.0);
                 if !conflicts.is_empty() {
-                    info = info.push(
-                        scaled_text(
-                            format!("Also bound to: {}", conflicts.join(", ")),
-                            12.0,
-                            scale,
-                        )
-                        .color(hyprforge_ui::theme::warning()),
+                    what = what.push(
+                        hint_text(format!("also bound to {}", conflicts.join(", ")), scale)
+                            .color(hyprforge_ui::theme::warning()),
                     );
                 }
 
                 // Armed rows swap Edit/Delete for the confirm pair, so the
                 // only two things that can happen next are the two the user
                 // is being asked about.
-                let actions: Vec<Element<'_, Message>> = if self.pending_delete == Some(i) {
-                    vec![
-                        secondary_button("Keep").on_press(Message::DeleteCancel).into(),
+                let actions: Element<'_, Message> = if self.pending_delete == Some(i) {
+                    row![
+                        secondary_button("Keep").on_press(Message::DeleteCancel),
                         danger_button("Delete for good", Message::DeleteConfirm(i)),
                     ]
+                    .spacing(spacing::XS)
+                    .into()
                 } else {
-                    vec![
-                        secondary_button("Edit").on_press(Message::Edit(i)).into(),
-                        danger_button("Delete", Message::Delete(i)),
+                    // Delete is quiet here and red only once armed: it
+                    // already asks before it acts, and a red button on every
+                    // one of sixty rows made the danger colour the table's
+                    // texture instead of a warning.
+                    row![
+                        secondary_button("Edit").on_press(Message::Edit(i)),
+                        secondary_button("Delete").on_press(Message::Delete(i)),
                     ]
+                    .spacing(spacing::XS)
+                    .into()
                 };
 
-                list = list.push(
-                    container(
-                        row![
-                            checkbox(shortcut.enabled)
-                                .on_toggle(move |_| Message::ToggleEnabled(i)),
-                            info,
-                        ]
-                        .extend(actions)
-                        .spacing(spacing::SM)
-                        .align_y(iced::Alignment::Center),
-                    )
-                    .padding([spacing::SM, 0.0]),
+                let line = row![
+                    toggle(shortcut.enabled, scale).on_toggle(move |_| Message::ToggleEnabled(i)),
+                    container(keys).width(Length::FillPortion(KEYS_PORTION)),
+                    container(what).width(Length::FillPortion(ACTION_PORTION)),
+                    container(config_line(shortcut.action.dispatcher.clone(), scale))
+                        .width(Length::FillPortion(DISPATCHER_PORTION)),
+                    actions,
+                ]
+                .spacing(spacing::MD)
+                .align_y(iced::Alignment::Center);
+
+                // A conflicting bind's row takes a faint warning tint on
+                // top of its stripe — the mockup's flagged row, in the
+                // colour the Theme gives a conflicting bind.
+                let has_conflict = !conflicts.is_empty();
+                group = group.push(
+                    container(line)
+                        .padding([spacing::SM, spacing::MD])
+                        .width(Length::Fill)
+                        .style(move |_t: &iced::Theme| {
+                            let base = setting_row_style(stripe);
+                            match has_conflict {
+                                false => base,
+                                true => iced::widget::container::Style {
+                                    background: Some(iced::Background::Color(iced::Color {
+                                        a: 0.10,
+                                        ..hyprforge_ui::theme::warning()
+                                    })),
+                                    border: iced::Border {
+                                        width: 1.0,
+                                        color: iced::Color { a: 0.45, ..hyprforge_ui::theme::warning() },
+                                        ..base.border
+                                    },
+                                    ..base
+                                },
+                            }
+                        }),
                 );
             }
+            list = list.push(group);
         }
 
-        let count = if self.shortcuts.is_empty() {
-            "Shortcuts".to_string()
-        } else {
-            format!("Shortcuts ({})", self.shortcuts.len())
-        };
-        content = content.push(section(
-            count,
-            scale,
-            column![
-                text_input("Filter by name, key or action…", &self.filter)
-                    .on_input(Message::Filter)
-                    .padding(8),
-                container(scrollable(list).width(Length::Fill).height(Length::Shrink))
-                    .max_height(420.0),
-            ]
-            .spacing(spacing::SM),
-        ));
+        // One scroll area, the shell's: this list used to sit in a
+        // scrollable of its own capped at 420px, so a long list scrolled
+        // inside a page that also scrolled.
         content = content.push(
-            container(
-                row![
-                    secondary_button("Import from config").on_press(Message::ImportFromConfig),
-                    primary_button("Add shortcut").on_press(Message::Add),
-                ]
-                .spacing(spacing::SM),
-            )
-            .width(Length::Fill)
-            .align_x(iced::alignment::Horizontal::Right),
+            text_input("Filter by name, key or action…", &self.filter)
+                .on_input(Message::Filter)
+                .padding(spacing::SM)
+                .style(inset_input_style),
         );
+        content = content.push(list);
 
         container(content).padding(spacing::LG).into()
     }
+}
+
+/// How wide the bind editor grows, and its controls: narrow enough that
+/// a row's label and its control read as one row, which a full-width
+/// editor with a 2:3 split did not.
+const EDITOR_WIDTH: f32 = 720.0;
+const EDITOR_CONTROL_WIDTH: f32 = 300.0;
+
+/// The key row's hint slot: two lines of hint text, reserved whether or
+/// not recording is on, so the page below never jumps.
+const KEY_HINT_HEIGHT: f32 = 30.0;
+
+/// One of the editor's groups: a label over a stack of striped rows.
+fn editor_group<'a>(label: &str, rows: Vec<Element<'a, Message>>, scale: FontScale) -> Element<'a, Message> {
+    column![section_label(label, scale), setting_list(rows)].spacing(spacing::SM).into()
+}
+
+/// How the table's width is shared between keys, what the bind does, and
+/// the dispatcher it calls. Shared by the header and every row, so the
+/// columns line up by construction rather than by care.
+const KEYS_PORTION: u16 = 3;
+const ACTION_PORTION: u16 = 4;
+const DISPATCHER_PORTION: u16 = 3;
+
+/// The table's column heads, laid out on the rows' own portions — with a
+/// spacer where each row has its switch and its buttons, so the heads sit
+/// over the columns they name.
+fn table_header<'a>(scale: FontScale) -> Element<'a, Message> {
+    let head = |label: &str, portion: u16| {
+        container(section_label(label, scale)).width(Length::FillPortion(portion))
+    };
+    container(
+        row![
+            iced::widget::Space::new().width(Length::Fixed(scale.apply(40.0))),
+            head("Keys", KEYS_PORTION),
+            head("Action", ACTION_PORTION),
+            head("Dispatcher", DISPATCHER_PORTION),
+            iced::widget::Space::new().width(Length::Fixed(scale.apply(140.0))),
+        ]
+        .spacing(spacing::MD),
+    )
+    .padding([0.0, spacing::MD])
+    .into()
 }
 
 impl ShortcutsModule {
@@ -1411,16 +1495,20 @@ impl ShortcutsModule {
     }
 
     fn draft_view(&self, draft: &ShortcutDraft, scale: FontScale) -> Element<'_, Message> {
-        let title = if draft.editing_index.is_some() { "Edit shortcut" } else { "New shortcut" };
+        let title = if draft.editing_index.is_some() { "Edit bind" } else { "New bind" };
 
-        let mut body = column![scaled_text(title, 22.0, scale)]
-            .spacing(spacing::LG)
-            .max_width(640.0);
+        // A heading, not a second page title: the shell already says
+        // "Keybinds" above this.
+        let mut body = column![scaled_text(title, 16.0, scale)
+            .font(iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT })]
+        .spacing(spacing::LG)
+        .max_width(EDITOR_WIDTH);
 
-        body = body.push(section("Key", scale, self.key_section(draft, scale)));
-        body = body.push(section("Action", scale, self.action_section(draft, scale)));
-        body = body.push(section("Options", scale, self.options_section(draft, scale)));
-        body = body.push(section("Writes", scale, self.preview_section(draft, scale)));
+        body = body.push(editor_group("Key", self.key_rows(draft, scale), scale));
+        body = body.push(editor_group("Action", self.action_rows(draft, scale), scale));
+        body = body.push(editor_group("Options", self.options_rows(draft, scale), scale));
+        body = body.push(column![section_label("Writes", scale), self.preview_section(draft, scale)]
+            .spacing(spacing::SM));
 
         let blockers = draft.blockers();
         if let Some(first) = blockers.first() {
@@ -1456,98 +1544,158 @@ impl ShortcutsModule {
         container(body).padding(spacing::LG).into()
     }
 
-    fn key_section(&self, draft: &ShortcutDraft, scale: FontScale) -> Element<'_, Message> {
+    /// The chord: which modifiers, which key, and what it adds up to.
+    fn key_rows(&self, draft: &ShortcutDraft, scale: FontScale) -> Vec<Element<'_, Message>> {
         let shown_mods: Vec<Modifier> = if draft.show_all_mods {
             Modifier::ALL.to_vec()
         } else {
             PRIMARY_MODS.to_vec()
         };
-        let mut mod_row = row![].spacing(spacing::SM);
+        // Toggle chips in a row that wraps. Eight checkboxes in one row
+        // that did not wrap is what made CAPS, MOD3 and SUPER draw on top
+        // of each other once the rare modifiers were shown.
+        let mut chips = row![].spacing(spacing::XS);
         for m in shown_mods {
             let on = draft.mods.contains(&m);
-            mod_row = mod_row.push(
-                checkbox(on).label(m.keyword()).on_toggle(move |v| Message::DraftToggleMod(m, v)),
+            chips = chips.push(
+                iced::widget::button(
+                    scaled_text(m.keyword(), density::META_TEXT_BASE, scale)
+                        .font(hyprforge_ui::theme::mono_font()),
+                )
+                .padding([2.0, scale.apply(10.0)])
+                .on_press(Message::DraftToggleMod(m, !on))
+                .style(segment_style(SegmentLook::Choice, on)),
             );
         }
+        chips = chips.push(
+            iced::widget::button(hint_text(if draft.show_all_mods { "fewer" } else { "more…" }, scale))
+                .padding([2.0, scale.apply(6.0)])
+                .on_press(Message::DraftShowAllMods(!draft.show_all_mods))
+                .style(|t: &iced::Theme, s| iced::widget::button::Style {
+                    background: None,
+                    ..iced::widget::button::secondary(t, s)
+                }),
+        );
+        let modifiers = setting_row(
+            0,
+            "Modifiers",
+            None,
+            container(chips.wrap().vertical_spacing(spacing::XS))
+                .max_width(scale.apply(EDITOR_CONTROL_WIDTH + 80.0)),
+            scale,
+        );
 
+        // While recording, the field is outlined in the accent and says
+        // so — the mockup's recording row. The hint under it is always
+        // there, at a fixed height, so starting to record no longer
+        // pushes everything below it down a line.
         let capture = if draft.capturing {
-            primary_button("Press a key…").on_press(Message::DraftCapture)
+            primary_button("Recording…").on_press(Message::DraftCapture)
         } else {
-            secondary_button("Press a key").on_press(Message::DraftCapture)
+            secondary_button("Record").on_press(Message::DraftCapture)
         };
-
-        let mut form = column![
-            row_field("Modifiers", mod_row),
-            checkbox(draft.show_all_mods)
-                .label("Show CAPS and MOD2–5")
-                .on_toggle(Message::DraftShowAllMods),
-            row_field(
-                "Key",
-                row![
-                    text_input("e.g. Q, Return, XF86AudioRaiseVolume", &draft.key)
-                        .on_input(Message::DraftKey),
-                    capture,
-                ]
-                .spacing(spacing::SM)
-                .align_y(iced::Alignment::Center),
+        let recording = draft.capturing;
+        let field = text_input(
+            if recording { "press keys…" } else { "e.g. Q, Return, XF86AudioRaiseVolume" },
+            &draft.key,
+        )
+        .on_input(Message::DraftKey)
+        .padding(spacing::SM)
+        .style(move |t: &iced::Theme, status| {
+            let base = inset_input_style(t, status);
+            match recording {
+                false => base,
+                true => iced::widget::text_input::Style {
+                    border: iced::Border {
+                        width: 1.5,
+                        color: t.extended_palette().primary.base.color,
+                        ..base.border
+                    },
+                    ..base
+                },
+            }
+        })
+        .width(Length::Fixed(scale.apply(EDITOR_CONTROL_WIDTH - 90.0)));
+        let hint = if recording {
+            "Press the chord now — Esc cancels. A chord Hyprland already owns never \
+             reaches this window; type it instead."
+        } else {
+            "Type a key name, or Record and press the chord."
+        };
+        let key = setting_row(
+            1,
+            "Key",
+            Some(
+                container(hint_text(hint, scale))
+                    .height(Length::Fixed(scale.apply(KEY_HINT_HEIGHT)))
+                    .into(),
             ),
-        ]
-        .spacing(spacing::MD);
+            row![field, capture].spacing(spacing::SM).align_y(iced::Alignment::Center),
+            scale,
+        );
 
-        if draft.capturing {
-            // Said plainly because it *will* happen: the compositor eats a
-            // chord it already owns before this window ever sees it.
-            form = form.push(meta_text(
-                "Press the combination now. Esc cancels. A chord Hyprland has \
-                 already bound never reaches this window — type those in the \
-                 field instead.",
-                12.0,
-                scale,
-            ));
-        }
-
+        let mut rows = vec![modifiers, key];
         if !draft.key.trim().is_empty() {
-            form = form.push(meta_text(
-                format!("Binds: {}", draft.combo().to_bind_string()),
-                12.0,
-                scale,
-            ));
+            let caps = row(draft
+                .combo()
+                .to_bind_string()
+                .split(" + ")
+                .map(|part| keycap(part.to_string(), scale)))
+            .spacing(spacing::XS);
+            let hint = draft.conflict.as_ref().map(|c| {
+                hint_text(c.clone(), scale).color(hyprforge_ui::theme::warning()).into()
+            });
+            rows.push(setting_row(2, "Binds", hint, caps, scale));
         }
-        if let Some(conflict) = &draft.conflict {
-            form = form.push(
-                scaled_text(conflict.clone(), 12.0, scale).color(hyprforge_ui::theme::warning()),
-            );
-        }
-        form.into()
+        rows
     }
 
-    fn action_section(&self, draft: &ShortcutDraft, scale: FontScale) -> Element<'_, Message> {
+    /// What the chord does: a catalogued action and its settings, or a raw
+    /// dispatcher written by hand.
+    fn action_rows(&self, draft: &ShortcutDraft, scale: FontScale) -> Vec<Element<'_, Message>> {
+        let width = Length::Fixed(scale.apply(EDITOR_CONTROL_WIDTH));
         let selected = draft.entry.map(EntryChoice);
-        let mut form = column![row_field(
+        let mut rows: Vec<Element<'_, Message>> = vec![setting_row(
+            0,
             "Action",
+            None,
             iced::widget::pick_list(ENTRY_CHOICES.as_slice(), selected, Message::DraftEntry)
-                .placeholder("Choose what this does…"),
-        )]
-        .spacing(spacing::MD);
+                .placeholder("Choose what this does…")
+                .style(dropdown_style)
+                .menu_style(dropdown_menu_style)
+                .width(width),
+            scale,
+        )];
 
         if draft.use_raw {
-            form = form.push(meta_text(
-                "Raw mode: the text below goes inside hl.dsp.<dispatcher>( … ) \
-                 exactly as written. It's checked for valid Lua, but not for \
-                 whether Hyprland knows that dispatcher — that's only found \
-                 out on reload.",
-                12.0,
+            rows.push(setting_row(
+                rows.len(),
+                "Dispatcher",
+                Some(
+                    hint_text(
+                        "Goes inside hl.dsp.<dispatcher>( … ) exactly as written — checked \
+                         for valid Lua, not for whether Hyprland knows it.",
+                        scale,
+                    )
+                    .into(),
+                ),
+                text_input("e.g. window.close", &draft.raw_dispatcher)
+                    .on_input(Message::DraftRawDispatcher)
+                    .padding(spacing::SM)
+                    .style(inset_input_style)
+                    .width(width),
                 scale,
             ));
-            form = form.push(row_field(
-                "Dispatcher",
-                text_input("e.g. window.close", &draft.raw_dispatcher)
-                    .on_input(Message::DraftRawDispatcher),
-            ));
-            form = form.push(row_field(
+            rows.push(setting_row(
+                rows.len(),
                 "Lua argument",
+                None,
                 text_input("e.g. { direction = [[left]] }", &draft.raw)
-                    .on_input(Message::DraftRaw),
+                    .on_input(Message::DraftRaw)
+                    .padding(spacing::SM)
+                    .style(inset_input_style)
+                    .width(width),
+                scale,
             ));
         } else if let Some(entry) = draft.entry {
             for param in entry.params {
@@ -1563,15 +1711,21 @@ impl ShortcutsModule {
                             Message::DraftParam(key, v.to_string())
                         })
                         .placeholder("Choose…")
+                        .style(dropdown_style)
+                        .menu_style(dropdown_menu_style)
+                        .width(width)
                         .into()
                     }
-                    ParamKind::Bool => checkbox(value == "true")
+                    ParamKind::Bool => toggle(value == "true", scale)
                         .on_toggle(move |v| {
                             Message::DraftParam(key, if v { "true" } else { "" }.to_string())
                         })
                         .into(),
                     _ => text_input(param.hint, &value)
                         .on_input(move |v| Message::DraftParam(key, v))
+                        .padding(spacing::SM)
+                        .style(inset_input_style)
+                        .width(width)
                         .into(),
                 };
                 let label = if param.required {
@@ -1579,59 +1733,79 @@ impl ShortcutsModule {
                 } else {
                     format!("{} (optional)", param.label)
                 };
-                form = form.push(row_field(label, field));
                 // Hints go under text fields only — a dropdown's options
-                // already say what's allowed, and a checkbox's label does.
-                if !param.hint.is_empty()
-                    && !matches!(param.kind, ParamKind::Enum(_) | ParamKind::Bool)
-                {
-                    form = form.push(meta_text(param.hint, 11.0, scale));
-                }
+                // already say what's allowed, and a switch's label does.
+                let hint = (!param.hint.is_empty()
+                    && !matches!(param.kind, ParamKind::Enum(_) | ParamKind::Bool))
+                .then(|| hint_text(param.hint, scale).into());
+                rows.push(setting_row(rows.len(), label, hint, field, scale));
             }
             if entry.params.is_empty() {
-                form = form.push(meta_text("This action takes no settings.", 12.0, scale));
+                rows.push(setting_row(
+                    rows.len(),
+                    "Settings",
+                    None,
+                    hint_text("This action takes none.", scale),
+                    scale,
+                ));
             }
         }
 
-        form = form.push(
-            checkbox(draft.use_raw)
-                .label("Write the Lua myself")
-                .on_toggle(Message::DraftUseRaw),
-        );
-        form.into()
+        rows.push(setting_row(
+            rows.len(),
+            "Write the Lua myself",
+            None,
+            toggle(draft.use_raw, scale).on_toggle(Message::DraftUseRaw),
+            scale,
+        ));
+        rows
     }
 
-    fn options_section(&self, draft: &ShortcutDraft, scale: FontScale) -> Element<'_, Message> {
-        let mut form = column![
-            row_field(
+    /// The description, whether the bind is on, and `hl.bind`'s flags.
+    fn options_rows(&self, draft: &ShortcutDraft, scale: FontScale) -> Vec<Element<'_, Message>> {
+        let mut rows: Vec<Element<'_, Message>> = vec![
+            setting_row(
+                0,
                 "Description",
-                text_input("Shown in hyprctl binds", &draft.description)
-                    .on_input(Message::DraftDescription),
+                Some(hint_text("Shown in hyprctl binds", scale).into()),
+                text_input("", &draft.description)
+                    .on_input(Message::DraftDescription)
+                    .padding(spacing::SM)
+                    .style(inset_input_style)
+                    .width(Length::Fixed(scale.apply(EDITOR_CONTROL_WIDTH))),
+                scale,
             ),
-            checkbox(draft.enabled).label("Enabled").on_toggle(Message::DraftEnabled),
-        ]
-        .spacing(spacing::MD);
+            setting_row(
+                1,
+                "Enabled",
+                None,
+                toggle(draft.enabled, scale).on_toggle(Message::DraftEnabled),
+                scale,
+            ),
+        ];
 
-        let mut flags = column![].spacing(spacing::XS);
-        for (i, row) in FLAG_ROWS.iter().enumerate() {
+        // The behaviour flags as switch rows like every other setting.
+        // They were six checkboxes each with a hint under it in one cell,
+        // which made a rarely-touched control the tallest thing on screen.
+        for (i, flag) in FLAG_ROWS.iter().enumerate() {
             let mut copy = draft.flags;
-            let on = *(row.field)(&mut copy);
-            flags = flags.push(
-                column![
-                    checkbox(on).label(row.label).on_toggle(move |v| Message::DraftFlag(i, v)),
-                    meta_text(row.hint, 11.0, scale),
-                ]
-                .spacing(0.0),
-            );
+            let on = *(flag.field)(&mut copy);
+            rows.push(setting_row(
+                rows.len(),
+                flag.label,
+                Some(hint_text(flag.hint, scale).into()),
+                toggle(on, scale).on_toggle(move |v| Message::DraftFlag(i, v)),
+                scale,
+            ));
         }
-        form = form.push(row_field("Behaviour", flags));
-
         if let Some(conflict) = draft.flags.conflict() {
-            form = form.push(
-                scaled_text(conflict, 12.0, scale).color(hyprforge_ui::theme::warning()),
+            rows.push(
+                container(scaled_text(conflict, 12.0, scale).color(hyprforge_ui::theme::warning()))
+                    .padding([spacing::XS, spacing::MD])
+                    .into(),
             );
         }
-        form.into()
+        rows
     }
 
     /// The exact line this draft writes. Rendered by the same codegen the
@@ -1645,11 +1819,26 @@ impl ShortcutsModule {
         } else {
             "Nothing yet — this shortcut is incomplete.".to_string()
         };
-        column![
-            scaled_text(text, 12.0, scale).font(hyprforge_ui::theme::mono_font()),
-            meta_text("Written to ~/.config/hypr/hyprforge/keybinds.lua", 11.0, scale),
-        ]
-        .spacing(spacing::XS)
+        // The file's name over the line, in a recessed block — the
+        // mockup's diff box, holding the one line this bind writes.
+        container(
+            column![
+                config_line("~/.config/hypr/hyprforge/keybinds.lua", scale),
+                config_line(text, scale).color(hyprforge_ui::theme::text()),
+            ]
+            .spacing(spacing::XS),
+        )
+        .padding(spacing::MD)
+        .width(Length::Fill)
+        .style(|_t: &iced::Theme| iced::widget::container::Style {
+            background: Some(iced::Background::Color(hyprforge_ui::theme::surface::sidebar())),
+            border: iced::Border {
+                radius: density::inner_radius().into(),
+                width: 1.0,
+                color: hyprforge_ui::theme::surface::card_border(),
+            },
+            ..iced::widget::container::Style::default()
+        })
         .into()
     }
 }

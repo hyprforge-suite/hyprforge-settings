@@ -27,10 +27,11 @@ use hyprforge_appearance::storage::Appearance;
 use hyprforge_core::hlconfig::import::{Discovered, Live};
 use hyprforge_core::hlconfig::{Invalid, Setting, Value};
 use hyprforge_core::lua_setup;
-use hyprforge_ui::theme::{spacing, FontScale, BASE_TEXT_SIZE};
+use hyprforge_ui::theme::{self, spacing, FontScale};
 use hyprforge_ui::widgets::{
-    config_line, danger_button, divider, meta_text, primary_button, scaled_text,
-    secondary_button, section, section_label,
+    chip, config_line, dropdown_menu_style, dropdown_style, hero_card,
+    hint_text, inset_input_style, meta_text, primary_button, scaled_text, secondary_button,
+    section, section_label, setting_list, setting_row, toggle, Tint,
 };
 use crate::modules::setup_notice::setup_notice;
 use crate::module::SettingsModule;
@@ -792,40 +793,52 @@ impl AppearanceModule {
     /// user is most likely to be looking for, and because it's the part
     /// that makes the Hyprland colours below make sense.
     fn theme_view(&self, scale: FontScale) -> Element<'_, Message> {
-        let mut body = column![meta_text(
-            "These apply to GTK and Qt apps, not to Hyprland itself. Unlike \
-             everything else on this screen they're shared with the rest of your \
-             desktop — changing one takes effect immediately and there's no \
-             generated file to undo it with.",
-            12.0,
-            scale,
-        )]
+        let mut page = column![
+            section_label("Desktop theme", scale),
+            hint_text(
+                "These apply to GTK and Qt apps, not to Hyprland itself. Unlike \
+                 everything else here they're shared with the rest of your desktop — \
+                 changing one takes effect immediately and there's no generated file \
+                 to undo it with.",
+                scale,
+            ),
+        ]
         .spacing(spacing::SM);
 
+        // The only undo gsettings has: what the value was before, and a
+        // button that writes it back.
         if let Some((key, previous)) = &self.desktop_undo {
-            body = body.push(
+            page = page.push(hero_card(
+                Tint::Dim,
                 row![
                     scaled_text(
                         format!("{} was \u{201c}{previous}\u{201d}", label_for(key)),
                         13.0,
                         scale,
-                    ),
+                    )
+                    .width(Length::Fill),
                     secondary_button("Put it back")
                         .on_press(Message::DesktopUndo(key, previous.clone())),
                 ]
                 .spacing(spacing::MD)
                 .align_y(iced::Alignment::Center),
-            );
+            ));
         }
 
-        for setting in desktop::SETTINGS {
-            body = body.push(divider());
-            body = body.push(self.desktop_row(setting, scale));
-        }
-        section("Desktop theme", scale, body)
+        let rows: Vec<Element<'_, Message>> = desktop::SETTINGS
+            .iter()
+            .enumerate()
+            .map(|(i, setting)| self.desktop_row(i, setting, scale))
+            .collect();
+        page.push(setting_list(rows)).into()
     }
 
-    fn desktop_row(&self, setting: &'static DesktopSetting, scale: FontScale) -> Element<'_, Message> {
+    fn desktop_row(
+        &self,
+        index: usize,
+        setting: &'static DesktopSetting,
+        scale: FontScale,
+    ) -> Element<'_, Message> {
         let key = setting.key;
         let current = self.desktop.get(key).cloned();
         let shown = self
@@ -834,6 +847,7 @@ impl AppearanceModule {
             .cloned()
             .or_else(|| current.clone())
             .unwrap_or_default();
+        let width = Length::Fixed(scale.apply(260.0));
 
         let control: Element<'_, Message> = match setting.kind {
             DesktopKind::Enum(choices) => {
@@ -842,6 +856,9 @@ impl AppearanceModule {
                 pick_list(options, selected, move |choice: String| {
                     Message::DesktopChosen(key, choice)
                 })
+                .style(dropdown_style)
+                .menu_style(dropdown_menu_style)
+                .width(width)
                 .into()
             }
             // A scan that hasn't returned, or found nothing, falls back
@@ -859,6 +876,9 @@ impl AppearanceModule {
                 pick_list(options, selected, move |choice: String| {
                     Message::DesktopChosen(key, choice)
                 })
+                .style(dropdown_style)
+                .menu_style(dropdown_menu_style)
+                .width(width)
                 .into()
             }
             DesktopKind::Font if !self.installed.fonts.is_empty() => {
@@ -876,12 +896,16 @@ impl AppearanceModule {
                 row![
                     pick_list(options, selected, move |choice: String| {
                         Message::FontFamilyChosen(key, choice)
-                    }),
+                    })
+                    .style(dropdown_style)
+                    .menu_style(dropdown_menu_style)
+                    .width(Length::Fixed(scale.apply(200.0))),
                     text_input("size", &shown_size)
                         .on_input(move |raw| Message::FontSizeChanged(key, raw))
                         .on_submit(Message::FontSizeSubmitted(key))
                         .padding(spacing::SM)
-                        .width(Length::Fixed(70.0)),
+                        .style(inset_input_style)
+                        .width(Length::Fixed(scale.apply(60.0))),
                 ]
                 .spacing(spacing::SM)
                 .align_y(iced::Alignment::Center)
@@ -891,20 +915,24 @@ impl AppearanceModule {
                 .on_input(move |raw| Message::DesktopDraftChanged(key, raw))
                 .on_submit(Message::DesktopCommit(key))
                 .padding(spacing::SM)
+                .style(inset_input_style)
+                .width(width)
                 .into(),
         };
 
-        let mut label_side = column![scaled_text(setting.label, BASE_TEXT_SIZE, scale)].spacing(2);
-        label_side = label_side.push(meta_text(setting.help, 12.0, scale));
+        // Everything the row has to say goes in its hint: what the setting
+        // is for, a value refused, a desktop without it, and — only while
+        // it is really true — that Hyprland is overriding it.
+        let mut hint = column![hint_text(setting.help, scale)].spacing(2.0);
         if let Some(problem) = self.desktop_errors.get(key) {
-            label_side = label_side.push(scaled_text(problem.clone(), 12.0, scale));
+            hint = hint.push(hint_text(problem.clone(), scale).color(theme::error()));
         }
         if current.is_none() {
-            label_side = label_side.push(meta_text("Not available on this desktop", 12.0, scale));
+            hint = hint.push(hint_text("Not available on this desktop", scale));
         }
         // Only while the contesting option is actually on. Warning
         // unconditionally would cry wolf at users who already turned it
-        // off, and this screen is where they'd have turned it off.
+        // off, and this page is where they'd have turned it off.
         if let Some(contested) = setting.contested_by {
             let on = self
                 .live
@@ -912,33 +940,22 @@ impl AppearanceModule {
                 .and_then(|l| l.value.as_bool())
                 .unwrap_or(true);
             if on {
-                label_side = label_side.push(scaled_text(contested.warning, 12.0, scale));
+                hint = hint.push(hint_text(contested.warning, scale).color(theme::warning()));
             }
         }
 
-        let control_side: Element<'_, Message> =
-            if self.desktop_drafts.contains_key(key) {
-                row![
-                    container(control).width(Length::Fill),
-                    primary_button("Set").on_press(Message::DesktopCommit(key)),
-                ]
+        let control: Element<'_, Message> = if self.desktop_drafts.contains_key(key) {
+            row![control, primary_button("Set").on_press(Message::DesktopCommit(key))]
                 .spacing(spacing::SM)
                 .align_y(iced::Alignment::Center)
                 .into()
-            } else {
-                control
-            };
+        } else {
+            control
+        };
 
-        row![
-            container(label_side).width(Length::FillPortion(2)),
-            container(control_side).width(Length::FillPortion(3)),
-        ]
-        .spacing(spacing::MD)
-        .align_y(iced::Alignment::Center)
-        .into()
+        setting_row(index, setting.label, Some(hint.into()), control, scale)
     }
 
-    /// The Hyprland settings half, one section per catalog category.
     /// What this page writes, as the file will hold it, with the lines
     /// changed this session marked — the mockup's config preview.
     ///
@@ -984,6 +1001,7 @@ impl AppearanceModule {
         )
     }
 
+    /// The Hyprland settings half, one section per catalog category.
     fn windows_view<'a>(
         &'a self,
         mut content: iced::widget::Column<'a, Message>,
@@ -1040,16 +1058,18 @@ impl AppearanceModule {
         }
 
         let curve_names: Vec<String> = self.curves.iter().map(|c| c.name.clone()).collect();
-        let mut body = column![meta_text(
-            "Speed is Hyprland's own unit — higher is faster. Curves are the ones \
-             your config defines; Hyprforge doesn't write curves, only picks from \
-             them.",
-            12.0,
-            scale,
-        )]
+        let mut body = column![
+            section_label("Animations", scale),
+            hint_text(
+                "Speed is Hyprland's own unit — higher is faster. Curves are the ones \
+                 your config defines; Hyprforge doesn't write curves, only picks from \
+                 them.",
+                scale,
+            ),
+        ]
         .spacing(spacing::SM);
 
-        let mut any = false;
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
         for live in &self.live_animations {
             let leaf = live.leaf.clone();
             if !self.filter.trim().is_empty()
@@ -1057,7 +1077,6 @@ impl AppearanceModule {
             {
                 continue;
             }
-            any = true;
             let (current, owned) = self.effective_animation(&leaf);
             let shown_speed = self
                 .animation_drafts
@@ -1065,66 +1084,66 @@ impl AppearanceModule {
                 .cloned()
                 .unwrap_or_else(|| format!("{}", current.speed));
 
-            let mut label_side = column![scaled_text(leaf.clone(), BASE_TEXT_SIZE, scale)].spacing(2);
+            // Where the value comes from, as the same chip a catalogue
+            // row shows — the three-way distinction that stops a row
+            // claiming a default is the user's.
+            let source = if owned {
+                super::setting_rows::Source::Owned
+            } else if live.overridden {
+                super::setting_rows::Source::UserConfig
+            } else {
+                super::setting_rows::Source::Default
+            };
+            let mut hint = column![chip(source.short_label(), source.tint(), scale)].spacing(2.0);
             if let Some(problem) = self.animation_errors.get(&leaf) {
-                label_side = label_side.push(scaled_text(problem.clone(), 12.0, scale));
+                hint = hint.push(hint_text(problem.clone(), scale).color(theme::error()));
             }
-            label_side = label_side.push(meta_text(
-                if owned {
-                    "Set by Hyprforge"
-                } else if live.overridden {
-                    "From your Hyprland config"
-                } else {
-                    "Hyprland default"
-                },
-                12.0,
-                scale,
-            ));
 
             let for_toggle = leaf.clone();
             let for_speed = leaf.clone();
             let for_submit = leaf.clone();
             let for_curve = leaf.clone();
             let mut controls = row![
-                checkbox(current.enabled)
-                    .on_toggle(move |b| Message::AnimationToggled(for_toggle.clone(), b)),
                 text_input("speed", &shown_speed)
                     .on_input(move |raw| Message::AnimationSpeedChanged(for_speed.clone(), raw))
                     .on_submit(Message::AnimationSpeedSubmitted(for_submit.clone()))
                     .padding(spacing::SM)
-                    .width(Length::Fixed(90.0)),
+                    .style(inset_input_style)
+                    .width(Length::Fixed(scale.apply(70.0))),
                 pick_list(
                     curve_names.clone(),
                     Some(current.bezier.clone()).filter(|b| curve_names.contains(b)),
                     move |name: String| Message::AnimationCurveChosen(for_curve.clone(), name),
-                ),
+                )
+                .placeholder("curve")
+                .style(dropdown_style)
+                .menu_style(dropdown_menu_style)
+                .width(Length::Fixed(scale.apply(150.0))),
+                toggle(current.enabled, scale)
+                    .on_toggle(move |b| Message::AnimationToggled(for_toggle.clone(), b)),
             ]
             .spacing(spacing::SM)
             .align_y(iced::Alignment::Center);
 
+            // Quiet, like a catalogue row's Reset: it hands the animation
+            // back to your config, which is not destroying anything.
             if owned {
                 controls = controls
-                    .push(danger_button("Reset", Message::AnimationReset(leaf.clone())));
+                    .push(secondary_button("Reset").on_press(Message::AnimationReset(leaf.clone())));
             }
 
-            body = body.push(divider());
-            body = body.push(
-                row![
-                    container(label_side).width(Length::FillPortion(2)),
-                    container(controls).width(Length::FillPortion(3)),
-                ]
-                .spacing(spacing::MD)
-                .align_y(iced::Alignment::Center),
-            );
+            rows.push(setting_row(rows.len(), leaf.clone(), Some(hint.into()), controls, scale));
         }
-        if !any {
+        if rows.is_empty() {
             body = body.push(scaled_text(
                 format!("No animation matches “{}”.", self.filter.trim()),
                 13.0,
                 scale,
             ));
+        } else {
+            body = body.push(setting_list(rows));
         }
-        section("Animations", scale, body)
+        body.into()
     }
 
     /// Both halves of an import, reviewed together — "adopt what I already

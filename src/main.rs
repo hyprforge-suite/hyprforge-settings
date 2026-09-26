@@ -8,7 +8,7 @@ mod singleton;
 use hyprforge_ui::density;
 use hyprforge_ui::theme::{app_theme, spacing, surface, text, text_dim, FontScale};
 use hyprforge_ui::widgets::{
-    chip, config_line, hint_text, page_header, pending_bar, primary_button, scaled_text, search_field, secondary_button,
+    chip, config_line, countdown_ring, hint_text, page_header, pending_bar, primary_button, scaled_text, search_field, secondary_button,
     section_label, selectable_row_style, status_dot, Tint,
 };
 use crate::module::{NavBadge, Pending, SearchEntry, SettingsModule};
@@ -332,9 +332,24 @@ fn main_window_settings() -> window::Settings {
 /// rather than a visible caption.
 const REVERT_POPUP_TITLE: &str = "Hyprforge Keep Display Settings";
 
+/// The countdown ring's side at 100%.
+const REVERT_RING_BASE: f32 = 56.0;
+
+/// What the countdown prompt says under its question.
+///
+/// "Automatically" and "if you can't see this" are the point: the prompt
+/// exists because the change may have blanked the screen it is on, and
+/// someone who can read it needs to know that doing nothing is safe.
+fn revert_sentence(left: u32) -> String {
+    match left {
+        1 => "Reverting automatically in 1 second if you can't see this.".into(),
+        n => format!("Reverting automatically in {n} seconds if you can't see this."),
+    }
+}
+
 fn revert_popup_settings() -> window::Settings {
     window::Settings {
-        size: Size::new(420.0, 190.0),
+        size: Size::new(460.0, 180.0),
         position: window::Position::Centered,
         resizable: false,
         decorations: false,
@@ -991,24 +1006,32 @@ impl App {
     fn revert_popup_view(&self) -> Element<'_, Message> {
         let scale = self.font_scale;
         let left = self.displays.revert_seconds_left().unwrap_or(0);
+        let total = self.displays.revert_seconds_total().unwrap_or(left);
+        // The mockup's 1f: the countdown as a ring beside the question,
+        // so how much time is left reads at a glance and not only as a
+        // number, then the two ways out on their own row.
+        let question = column![
+            scaled_text("Keep these display settings?", 16.0, scale)
+                .font(iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT })
+                .color(text()),
+            scaled_text(revert_sentence(left), density::META_TEXT_BASE, scale).color(text_dim()),
+        ]
+        .spacing(spacing::XS);
         container(
             column![
-                scaled_text("Keep these display settings?", 17.0, scale),
-                scaled_text(
-                    format!("Reverting in {left}s if you don't choose."),
-                    13.0,
-                    scale,
-                )
-                .color(text_dim()),
+                row![countdown_ring(left, total, scale.apply(REVERT_RING_BASE)), question]
+                    .spacing(spacing::MD)
+                    .align_y(iced::Alignment::Center),
                 row![
-                    secondary_button("Revert now")
+                    Space::new().width(Length::Fill),
+                    secondary_button("Revert")
                         .on_press(Message::Displays(modules::displays::Message::RevertLayoutNow)),
                     primary_button("Keep changes")
                         .on_press(Message::Displays(modules::displays::Message::KeepLayout)),
                 ]
                 .spacing(spacing::SM),
             ]
-            .spacing(spacing::MD)
+            .spacing(spacing::LG)
             .padding(spacing::LG),
         )
         .width(Length::Fill)
@@ -1017,7 +1040,7 @@ impl App {
         .style(|_theme: &Theme| container::Style {
             background: Some(Background::Color(surface::card())),
             border: iced::Border {
-                radius: 10.0.into(),
+                radius: density::outer_radius().into(),
                 width: 1.0,
                 color: surface::card_border(),
             },
@@ -1751,5 +1774,18 @@ mod palette_tests {
 
         let empty = Palette { pages: vec![], settings: vec![], keys: vec![] };
         assert!(empty.first().is_none());
+    }
+}
+
+#[cfg(test)]
+mod revert_tests {
+    use super::*;
+
+    /// Doing nothing is the safe answer, and the sentence has to say so to
+    /// someone who can barely read the screen it is on.
+    #[test]
+    fn the_prompt_says_doing_nothing_reverts_and_counts_properly() {
+        assert_eq!(revert_sentence(1), "Reverting automatically in 1 second if you can't see this.");
+        assert_eq!(revert_sentence(9), "Reverting automatically in 9 seconds if you can't see this.");
     }
 }

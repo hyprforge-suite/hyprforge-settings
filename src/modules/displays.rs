@@ -607,6 +607,10 @@ pub struct DisplaysModule {
     /// deadline — this is only what the banner counts down, so a stalled or
     /// killed GUI can't keep a bad layout alive.
     revert_seconds_left: Option<u32>,
+    /// How long the countdown was when it started, so the prompt can
+    /// draw how much of it is left rather than only a number. Set and
+    /// cleared with `revert_seconds_left`, never on its own.
+    revert_seconds_total: Option<u32>,
     /// Whether the rarely-used per-head controls (numeric position, output
     /// policy, head swaps) are expanded. Collapsed on open.
     show_advanced: bool,
@@ -815,6 +819,7 @@ impl DisplaysModule {
                 renaming: None,
                 deleting: None,
                 revert_seconds_left: None,
+                revert_seconds_total: None,
                 show_advanced: false,
                 show_warnings: false,
                 last_event: None,
@@ -831,6 +836,11 @@ impl DisplaysModule {
     /// Seconds left before the daemon rolls back a provisional change, or
     /// `None` when nothing is pending. The app shell reads this to decide
     /// whether the pinned countdown window should exist.
+    /// The countdown's full length, for drawing what fraction is left.
+    pub fn revert_seconds_total(&self) -> Option<u32> {
+        self.revert_seconds_total.or(self.revert_seconds_left)
+    }
+
     pub fn revert_seconds_left(&self) -> Option<u32> {
         self.revert_seconds_left
     }
@@ -1295,10 +1305,12 @@ impl SettingsModule for DisplaysModule {
                     SignalKind::NewTopologySeen { summary } => format!("New topology: {summary}"),
                     SignalKind::RevertPending { seconds } => {
                         self.revert_seconds_left = Some(seconds);
+                        self.revert_seconds_total = Some(seconds);
                         return Task::none();
                     }
                     SignalKind::RevertResolved { reverted } => {
                         self.revert_seconds_left = None;
+                        self.revert_seconds_total = None;
                         let msg = if reverted {
                             "Display change reverted."
                         } else {
@@ -1332,10 +1344,12 @@ impl SettingsModule for DisplaysModule {
             }
             Message::KeepLayout => {
                 self.revert_seconds_left = None;
+                self.revert_seconds_total = None;
                 Task::perform(confirm_layout(), Message::RevertActionDone)
             }
             Message::RevertLayoutNow => {
                 self.revert_seconds_left = None;
+                self.revert_seconds_total = None;
                 Task::perform(revert_layout(), Message::RevertActionDone)
             }
             Message::RevertActionDone(Ok(())) => Task::none(),

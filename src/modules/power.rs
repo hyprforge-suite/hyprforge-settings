@@ -22,9 +22,12 @@ use hyprforge_power::{
     ProfileError, WhatSet,
 };
 use hyprforge_ui::theme::{self, spacing, FontScale, BASE_TEXT_SIZE};
-use hyprforge_ui::widgets::{meta_text, primary_button, scaled_text, secondary_button, section};
-use iced::widget::{checkbox, column, row};
-use iced::{Alignment, Element, Subscription, Task};
+use hyprforge_ui::widgets::{
+    chip, config_line, hero_card, hint_text, meta_text, scaled_text, secondary_button,
+    section_label, setting_list, setting_row, toggle, Tint,
+};
+use iced::widget::{column, row, Space};
+use iced::{Alignment, Element, Length, Subscription, Task};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -372,9 +375,11 @@ where
             content = content.push(scaled_text(msg.clone(), 13.0, scale).color(theme::warning()));
         }
 
-        content = content.push(self.keep_awake_section(scale));
+        // The battery leads, as in the mockup: it is the thing this page
+        // is about for most people who open it.
         content = content.push(self.battery_section(scale));
         content = content.push(self.profile_section(scale));
+        content = content.push(self.keep_awake_section(scale));
 
         // Padded like every other page, so its first section sits a
         // gap below the title the shell draws, not flush against it.
@@ -396,41 +401,56 @@ where
     /// this data — who else besides this screen is currently preventing
     /// sleep.
     fn keep_awake_section(&self, scale: FontScale) -> Element<'_, Message> {
-        let body: Element<'_, Message> = match &self.inhibit {
-            InhibitDisplayState::Unknown => meta_text("Loading…", BASE_TEXT_SIZE, scale).into(),
-            InhibitDisplayState::Unavailable(msg) => {
-                scaled_text(msg.clone(), BASE_TEXT_SIZE, scale).color(theme::warning()).into()
+        let rows: Vec<Element<'_, Message>> = match &self.inhibit {
+            InhibitDisplayState::Unknown => {
+                vec![setting_row(0, "Keep this machine awake", Some(hint_text("Loading…", scale).into()), Space::new(), scale)]
             }
+            InhibitDisplayState::Unavailable(msg) => vec![setting_row(
+                0,
+                "Keep this machine awake",
+                Some(hint_text(msg.clone(), scale).color(theme::warning()).into()),
+                Space::new(),
+                scale,
+            )],
             InhibitDisplayState::Ready { held, others } => {
-                let mut col = column![row![
-                    checkbox(held.is_some()).on_toggle(Message::KeepAwakeToggled),
-                    scaled_text("Keep this machine awake", 15.0, scale),
-                ]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center)]
-                .spacing(spacing::SM);
-
-                col = col.push(if others.is_empty() {
-                    meta_text("Nothing else is preventing sleep.", 12.0, scale)
+                let summary = if others.is_empty() {
+                    "Nothing else is preventing sleep.".to_string()
                 } else {
                     let plural = if others.len() == 1 { "" } else { "es" };
-                    meta_text(
-                        format!("{} other process{plural} also preventing sleep:", others.len()),
-                        12.0,
+                    format!("{} other process{plural} also preventing sleep", others.len())
+                };
+                let mut rows = vec![setting_row(
+                    0,
+                    "Keep this machine awake",
+                    Some(hint_text(summary, scale).into()),
+                    toggle(held.is_some(), scale).on_toggle(Message::KeepAwakeToggled),
+                    scale,
+                )];
+                // Each other holder as a row of its own, so "who" and
+                // "why" read as a pair rather than as one long line.
+                for (i, other) in others.iter().enumerate() {
+                    rows.push(setting_row(
+                        i + 1,
+                        other.who.clone(),
+                        Some(hint_text(other.why.clone(), scale).into()),
+                        chip("holding", Tint::Dim, scale),
                         scale,
-                    )
-                });
-                for other in others {
-                    col = col.push(meta_text(format!("{} — {}", other.who, other.why), 12.0, scale));
+                    ));
                 }
-                col.into()
+                rows
             }
         };
-        section("Keep awake", scale, body)
+        group("Keep awake", rows, scale)
     }
 
+    /// The battery, leading the page — the mockup's hero card.
+    ///
+    /// Tinted by what the battery is doing: the success colour while it
+    /// charges or is full, the warning colour once it is low, and no
+    /// state colour otherwise, because a battery discharging normally is
+    /// not a state worth a colour.
     fn battery_section(&self, scale: FontScale) -> Element<'_, Message> {
-        let body: Element<'_, Message> = match &self.battery {
+        match &self.battery {
             BatteryDisplayState::Unknown => meta_text("Loading…", BASE_TEXT_SIZE, scale).into(),
             BatteryDisplayState::Unavailable(msg) => {
                 scaled_text(msg.clone(), BASE_TEXT_SIZE, scale).color(theme::warning()).into()
@@ -439,20 +459,35 @@ where
                 meta_text("This machine has no battery.", BASE_TEXT_SIZE, scale).into()
             }
             BatteryDisplayState::Present(info) => {
-                let percentage_color =
-                    if info.is_low() { theme::warning() } else { theme::text() };
-                let mut lines = column![
-                    scaled_text(format!("{}%", info.percentage), 20.0, scale).color(percentage_color),
-                    meta_text(battery_state_label(info.state), 13.0, scale),
-                ]
-                .spacing(spacing::XS);
+                let tint = battery_tint(info.state, info.is_low());
+                let mut detail = battery_state_label(info.state).to_string();
                 if let Some(words) = info.time_remaining_words() {
-                    lines = lines.push(meta_text(words, 13.0, scale));
+                    detail = format!("{detail} \u{b7} {words}");
                 }
-                lines.into()
+                let mark = hyprforge_ui::glyph::battery(
+                    info.percentage as f32 / 100.0,
+                    scale.apply(28.0),
+                    tint.iced(),
+                    tint.iced(),
+                );
+                hero_card(
+                    tint,
+                    row![
+                        mark,
+                        column![
+                            scaled_text(format!("{}%", info.percentage), 22.0, scale)
+                                .font(iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT })
+                                .color(theme::text()),
+                            config_line(detail, scale),
+                        ]
+                        .spacing(2.0),
+                    ]
+                    .spacing(spacing::LG)
+                    .align_y(Alignment::Center),
+                )
+                .into()
             }
-        };
-        section("Battery", scale, body)
+        }
     }
 
     /// The one section on this screen that writes: picking a profile
@@ -460,6 +495,9 @@ where
     /// confirmation step of its own — the same one-click convention
     /// Network's radio toggle and Bluetooth's adapter toggle already use
     /// for a setting the daemon itself lets you flip straight back.
+    ///
+    /// Three cards side by side, the mockup's profile picker: the active
+    /// one outlined in the accent, because it is the selection.
     fn profile_section(&self, scale: FontScale) -> Element<'_, Message> {
         let body: Element<'_, Message> = match &self.profiles {
             ProfileDisplayState::Unknown => meta_text("Loading…", BASE_TEXT_SIZE, scale).into(),
@@ -467,20 +505,78 @@ where
                 scaled_text(msg.clone(), BASE_TEXT_SIZE, scale).color(theme::warning()).into()
             }
             ProfileDisplayState::Ready { available, active } => {
-                let mut buttons = row![].spacing(spacing::XS);
+                let mut cards = row![].spacing(spacing::SM);
                 for profile in available {
-                    let label = profile_label(*profile);
-                    let button = if profile == active {
-                        primary_button(label)
-                    } else {
-                        secondary_button(label)
-                    };
-                    buttons = buttons.push(button.on_press(Message::ProfileSelected(*profile)));
+                    let selected = profile == active;
+                    cards = cards.push(
+                        iced::widget::button(
+                            column![
+                                scaled_text(profile_label(*profile), 14.0, scale)
+                                    .font(iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT })
+                                    .color(theme::text()),
+                                hint_text(profile_hint(*profile), scale),
+                            ]
+                            .spacing(2.0),
+                        )
+                        .width(Length::Fill)
+                        .padding(spacing::MD)
+                        .on_press(Message::ProfileSelected(*profile))
+                        .style(move |t: &iced::Theme, status| profile_card_style(t, status, selected)),
+                    );
                 }
-                buttons.into()
+                cards.into()
             }
         };
-        section("Power profile", scale, body)
+        column![section_label("Power profile", scale), body].spacing(spacing::SM).into()
+    }
+}
+
+/// A section label over a stack of striped rows — this page's groups.
+fn group<'a>(label: &str, rows: Vec<Element<'a, Message>>, scale: FontScale) -> Element<'a, Message> {
+    column![section_label(label, scale), setting_list(rows)].spacing(spacing::SM).into()
+}
+
+/// The battery card's colour — see `battery_section`.
+fn battery_tint(state: BatteryState, low: bool) -> Tint {
+    match (state, low) {
+        (_, true) => Tint::Warning,
+        (BatteryState::Charging | BatteryState::FullyCharged | BatteryState::PendingCharge, _) => {
+            Tint::Success
+        }
+        _ => Tint::Dim,
+    }
+}
+
+/// What each profile does, in a line — what power-profiles-daemon itself
+/// changes, not a promise about refresh rates or blur it does not make.
+fn profile_hint(profile: PowerProfile) -> &'static str {
+    match profile {
+        PowerProfile::PowerSaver => "Slower, for longer on battery",
+        PowerProfile::Balanced => "The usual default",
+        PowerProfile::Performance => "Faster, uses more power",
+    }
+}
+
+/// A profile card: the stripe fill when idle, the accent outline and a
+/// faint accent fill when it is the active profile, and the row step on
+/// hover — never the accent on hover, which would look selected.
+fn profile_card_style(t: &iced::Theme, status: iced::widget::button::Status, selected: bool) -> iced::widget::button::Style {
+    let accent = t.extended_palette().primary.base.color;
+    let hovered = matches!(status, iced::widget::button::Status::Hovered);
+    let background = match (selected, hovered) {
+        (true, _) => iced::Color { a: 0.14, ..accent },
+        (false, true) => hyprforge_ui::theme::surface::row(),
+        (false, false) => hyprforge_ui::theme::row_tint(),
+    };
+    iced::widget::button::Style {
+        background: Some(iced::Background::Color(background)),
+        text_color: theme::text(),
+        border: iced::Border {
+            radius: hyprforge_ui::density::card_radius().into(),
+            width: if selected { 1.5 } else { 0.0 },
+            color: if selected { accent } else { iced::Color::TRANSPARENT },
+        },
+        ..iced::widget::button::Style::default()
     }
 }
 

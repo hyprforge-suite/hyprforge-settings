@@ -29,7 +29,8 @@ use hyprforge_core::hlconfig::{Invalid, Setting, Value};
 use hyprforge_core::lua_setup;
 use hyprforge_ui::theme::{spacing, FontScale, BASE_TEXT_SIZE};
 use hyprforge_ui::widgets::{
-    danger_button, divider, meta_text, primary_button, scaled_text, secondary_button, section,
+    config_line, danger_button, divider, meta_text, primary_button, scaled_text,
+    secondary_button, section, section_label,
 };
 use crate::modules::setup_notice::setup_notice;
 use crate::module::SettingsModule;
@@ -142,6 +143,10 @@ pub struct AppearanceModule {
     tab: Tab,
     stored: Appearance,
     drafts: BTreeMap<&'static str, String>,
+    /// Keys written since this window opened, for the "← changed" marks
+    /// on the page's Writes block. Session-only on purpose: it answers
+    /// "what did I just do", which a stored history would not.
+    changed: std::collections::BTreeSet<&'static str>,
     draft_errors: BTreeMap<&'static str, String>,
     /// Speed fields mid-edit, keyed by leaf. Same reason as `drafts`:
     /// committing per keystroke would reload Hyprland once per character.
@@ -205,6 +210,7 @@ impl AppearanceModule {
                 tab: Tab::Theme,
                 stored,
                 drafts: BTreeMap::new(),
+                changed: std::collections::BTreeSet::new(),
                 draft_errors: BTreeMap::new(),
                 animation_drafts: BTreeMap::new(),
                 animation_errors: BTreeMap::new(),
@@ -325,12 +331,17 @@ impl AppearanceModule {
     }
 
     fn apply_drafts(&mut self) -> Task<Message> {
+        // What leaves the drafts is what got written; a draft the
+        // catalogue refused stays, and is not marked as changed.
+        let drafted: Vec<&'static str> = self.drafts.keys().copied().collect();
         let applied = catalog_screen::apply_drafts(
             &mut self.stored.settings,
             &CATALOG,
             &mut self.drafts,
             &mut self.draft_errors,
         );
+        self.changed
+            .extend(drafted.into_iter().filter(|k| !self.drafts.contains_key(k)));
         match applied {
             true => self.save_and_maybe_reload(),
             false => Task::none(),
@@ -438,6 +449,7 @@ impl SettingsModule for AppearanceModule {
             }
             Message::Set(key, value) => {
                 self.stored.settings.set(key, value);
+                self.changed.insert(key);
                 self.status = None;
                 self.save_and_maybe_reload()
             }
@@ -927,13 +939,58 @@ impl AppearanceModule {
     }
 
     /// The Hyprland settings half, one section per catalog category.
+    /// What this page writes, as the file will hold it, with the lines
+    /// changed this session marked — the mockup's config preview.
+    ///
+    /// The generated Lua itself, not a summary of it: the suite's promise
+    /// is that nothing rewrites a dotfile silently, and the file's own
+    /// text is the only thing that proves that. Absent when the page
+    /// writes nothing, rather than a box saying so.
+    fn writes_block(&self, scale: FontScale) -> Option<Element<'_, Message>> {
+        if self.stored.settings.is_empty() {
+            return None;
+        }
+        let lua = hyprforge_appearance::apply::generate(&self.stored, self.known_curves().as_deref());
+        let mut lines = column![config_line(home_relative(&appearance_lua_path()), scale)]
+        .spacing(2.0);
+        for (line, changed) in annotate_generated(&lua, &self.changed) {
+            let mut shown = row![config_line(line, scale).color(hyprforge_ui::theme::text())]
+                .spacing(spacing::SM);
+            if changed {
+                shown = shown.push(config_line("← changed", scale).color(hyprforge_ui::theme::success()));
+            }
+            lines = lines.push(shown);
+        }
+        Some(
+            column![
+                section_label("Writes", scale),
+                container(lines)
+                    .padding(spacing::MD)
+                    .width(Length::Fill)
+                    .style(|_t: &iced::Theme| iced::widget::container::Style {
+                        background: Some(iced::Background::Color(
+                            hyprforge_ui::theme::surface::sidebar(),
+                        )),
+                        border: iced::Border {
+                            radius: hyprforge_ui::density::inner_radius().into(),
+                            width: 1.0,
+                            color: hyprforge_ui::theme::surface::card_border(),
+                        },
+                        ..iced::widget::container::Style::default()
+                    }),
+            ]
+            .spacing(spacing::SM)
+            .into(),
+        )
+    }
+
     fn windows_view<'a>(
         &'a self,
         mut content: iced::widget::Column<'a, Message>,
         scale: FontScale,
     ) -> iced::widget::Column<'a, Message> {
-        if !self.drafts.is_empty() {
-            // The Apply/Discard bar is the shell's now — see `pending`.
+        if let Some(writes) = self.writes_block(scale) {
+            content = content.push(writes);
         }
 
         let rows = self.rows();
@@ -1279,6 +1336,50 @@ fn appearance_toml_path() -> std::path::PathBuf {
     hyprforge_core::paths::hyprforge_config_dir().join("appearance.toml")
 }
 
+/// `path` with the home directory written `~`, the way a user would type
+/// it and the way the rest of the page names files.
+fn home_relative(path: &std::path::Path) -> String {
+    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        Some(home) => match path.strip_prefix(&home) {
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => path.display().to_string(),
+        },
+        None => path.display().to_string(),
+    }
+}
+
+/// The generated Lua's lines worth showing, each with whether its key was
+/// changed this session.
+///
+/// Leaves out the "do not edit" banner and blank lines — the block names
+/// the file above them — and rebuilds each value line's full key from the
+/// nested tables it sits in (`general = {` then `gaps_in = 6,` is
+/// `general:gaps_in`), which is the one shape `codegen::generate` writes.
+fn annotate_generated(
+    lua: &str,
+    changed: &std::collections::BTreeSet<&'static str>,
+) -> Vec<(String, bool)> {
+    let mut path: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    for line in lua.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("--") {
+            continue;
+        }
+        let mut is_changed = false;
+        if let Some(name) = trimmed.strip_suffix("= {").map(str::trim) {
+            path.push(name);
+        } else if trimmed.starts_with('}') {
+            path.pop();
+        } else if let Some((name, _)) = trimmed.split_once('=') {
+            let key = path.iter().copied().chain([name.trim()]).collect::<Vec<_>>().join(":");
+            is_changed = changed.contains(key.as_str());
+        }
+        out.push((line.to_string(), is_changed));
+    }
+    out
+}
+
 fn appearance_lua_path() -> std::path::PathBuf {
     hyprforge_core::paths::hypr_hyprforge_dir().join("appearance.lua")
 }
@@ -1286,6 +1387,25 @@ fn appearance_lua_path() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Writes block marks a line by the full key it writes, rebuilt
+    /// from the nested tables around it — so `gaps_in` inside `general`
+    /// is `general:gaps_in`, and a change to one key marks exactly its
+    /// line, against the generator's real output.
+    #[test]
+    fn a_changed_key_marks_its_own_line_in_the_generated_lua() {
+        let mut stored = Appearance::default();
+        stored.settings.set("general:gaps_in", Value::Int(6));
+        stored.settings.set("decoration:blur:passes", Value::Int(3));
+        let lua = hyprforge_appearance::apply::generate(&stored, None);
+        let changed: std::collections::BTreeSet<&'static str> = ["decoration:blur:passes"].into();
+
+        let lines = annotate_generated(&lua, &changed);
+        let marked: Vec<&str> = lines.iter().filter(|(_, c)| *c).map(|(l, _)| l.trim()).collect();
+        assert_eq!(marked, ["passes = 3,"], "{lua}");
+        assert!(lines.iter().any(|(l, c)| l.trim() == "gaps_in = 6," && !c));
+        assert!(lines.iter().all(|(l, _)| !l.trim_start().starts_with("--")), "no banner");
+    }
 
     /// A fresh AppearanceModule against an isolated config home and greeter
     /// export dir — see [`crate::modules::with_temp_env`].

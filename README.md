@@ -127,7 +127,7 @@ see the upstream CLAUDE.md's "Never add a colour constant to an app."
 
 `.github/workflows/ci.yml` builds the crate, runs clippy with warnings
 denied, and runs `cargo test`. There are no `#[ignore]`d live tests
-here — every one of this crate's 359 tests needs nothing but this
+here — every one of this crate's 365 tests needs nothing but this
 process, driving each module against a temp config directory and, where
 a screen needs one, a mock D-Bus backend
 (`hyprforge_network::backend::mock::MockBackend`,

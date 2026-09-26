@@ -48,10 +48,14 @@ Every sizing is a ratio of the Theme at 100% scale (`hyprforge-ui`'s
   line; Displays' arrangement canvas and rows; the keep/revert countdown;
   Keybinds as a table and its editor; Windows & workspaces' Writes block;
   Network, Power & battery, Bluetooth, Tray and Window rules as hero cards and
-  striped groups. The remaining pages — Idle & lock, Wallpaper, Night light,
-  Screen sharing, Session, Default apps, Appearance and Animations — take the
-  new headings and rows through the shared `section`, `row_field` and
-  `labelled` helpers, but still use checkboxes and unstriped rows.
+  striped groups; Idle & lock, Wallpaper, Night light, Screen sharing and
+  Session with their lists as entry blocks (a title, a switch where the entry
+  can be off, a quiet Remove, its fields as striped rows); Default apps,
+  Appearance and Animations as striped rows. Every on/off is a switch. The
+  only checkboxes left are the import reviews' "include this", which is what
+  a checkbox is for. A few forms — the Window rules editor, Displays'
+  Advanced section — still lay out through `row_field`, so their rows are
+  the new shape but unstriped.
 
 ## Departures from the mockup
 

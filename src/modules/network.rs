@@ -23,8 +23,11 @@ use hyprforge_network::{
 };
 use hyprforge_tray::Prefs as TrayPrefs;
 use hyprforge_ui::theme::{self, spacing, FontScale, BASE_TEXT_SIZE};
-use hyprforge_ui::widgets::{meta_text, primary_button, scaled_text, secondary_button, section};
-use iced::widget::{checkbox, column, row, text_input};
+use hyprforge_ui::widgets::{
+    chip, config_line, hero_card, hint_text, inset_input_style, meta_text, primary_button,
+    scaled_text, secondary_button, section_label, setting_list, setting_row, toggle, Tint,
+};
+use iced::widget::{column, row, text_input};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use std::sync::Arc;
 use std::time::Duration;
@@ -606,18 +609,18 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
             // that is exactly when the tray icon is sitting there showing
             // an error nobody can currently do anything about. Hiding the
             // switch that turns it off is its own small dead end.
-            content = content.push(section(
-                "Network",
-                scale,
-                column![scaled_text(msg.clone(), BASE_TEXT_SIZE, scale), self.tray_row(scale)]
-                    .spacing(spacing::SM),
-            ));
-            return content.into();
+            content = content.push(scaled_text(msg.clone(), BASE_TEXT_SIZE, scale));
+            content = content.push(group("Tray", vec![self.tray_row(0, scale)], scale));
+            return padded(content);
         }
 
         if self.loading {
             content = content.push(meta_text("Loading…", BASE_TEXT_SIZE, scale));
-            return content.into();
+            return padded(content);
+        }
+
+        if let Some(hero) = self.connected_card(scale) {
+            content = content.push(hero);
         }
 
         if !self.wired.is_empty() {
@@ -625,16 +628,12 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
         }
 
         if !self.wifi_present {
-            content = content.push(section(
-                "Wi-Fi",
-                scale,
-                meta_text("This machine has no Wi-Fi adapter.", BASE_TEXT_SIZE, scale),
-            ));
-            content = content.push(section("Tray", scale, self.tray_row(scale)));
-            return content.into();
+            content = content.push(meta_text("This machine has no Wi-Fi adapter.", BASE_TEXT_SIZE, scale));
+            content = content.push(group("Tray", vec![self.tray_row(0, scale)], scale));
+            return padded(content);
         }
 
-        content = content.push(self.radio_row(scale));
+        content = content.push(group("Wi-Fi", vec![self.radio_row(scale)], scale));
 
         let radio_on = matches!(self.status.as_ref().map(|s| s.radio), Some(RadioState::On));
         if radio_on {
@@ -648,14 +647,12 @@ impl<B: NetworkBackend + 'static> SettingsModule for NetworkModule<B> {
             content = content.push(self.join_dialog(join, scale));
         }
 
-        // Its own section now rather than a row under Wi-Fi: the tray
-        // icon covers the cable too, and a switch inside the Wi-Fi
-        // section read as switching a Wi-Fi-only icon.
-        content = content.push(section("Tray", scale, self.tray_row(scale)));
+        // Its own group rather than a row under Wi-Fi: the tray icon
+        // covers the cable too, and a switch inside the Wi-Fi group read
+        // as switching a Wi-Fi-only icon.
+        content = content.push(group("Tray", vec![self.tray_row(0, scale)], scale));
 
-        // Padded like every other page, so its first section sits a
-        // gap below the title the shell draws, not flush against it.
-        iced::widget::container(content).padding(spacing::LG).width(iced::Length::Fill).into()
+        padded(content)
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -674,6 +671,47 @@ impl<B: NetworkBackend + 'static> NetworkModule<B> {
     /// D-Bus call which can't possibly change anything is worse than no
     /// control — it invites clicking it and getting no explanation why
     /// nothing happened.
+    /// The network you are on, leading the page — the mockup's hero card.
+    ///
+    /// Only for Wi-Fi: a cable is its own row under Wired, where its
+    /// Connect and Disconnect already live. Absent when not connected.
+    fn connected_card(&self, scale: FontScale) -> Option<Element<'_, Message>> {
+        let ssid = self.status.as_ref()?.connected_to.as_ref()?;
+        let ap = self.access_points.iter().find(|ap| &ap.ssid == ssid);
+        let detail = match ap {
+            Some(ap) => format!(
+                "Connected \u{b7} {} \u{b7} {} \u{b7} {}%",
+                security_label(ap.security),
+                ap.band(),
+                ap.strength
+            ),
+            None => "Connected".to_string(),
+        };
+        let mark = hyprforge_ui::glyph::page(
+            hyprforge_ui::glyph::Page::Network,
+            scale.apply(22.0),
+            Tint::Accent.iced(),
+        );
+        Some(
+            hero_card(
+                Tint::Accent,
+                row![
+                    mark,
+                    column![
+                        scaled_text(ssid.to_display_string(), 15.0, scale)
+                            .font(iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT }),
+                        config_line(detail, scale),
+                    ]
+                    .spacing(2.0)
+                    .width(Length::Fill),
+                ]
+                .spacing(spacing::MD)
+                .align_y(Alignment::Center),
+            )
+            .into(),
+        )
+    }
+
     fn radio_row(&self, scale: FontScale) -> Element<'_, Message> {
         let radio = self.status.as_ref().map(|s| s.radio);
         debug_assert_eq!(
@@ -681,46 +719,37 @@ impl<B: NetworkBackend + 'static> NetworkModule<B> {
             !radio_offers_toggle(radio),
             "the toggle arm and the no-toggle arm below must stay in sync with this helper",
         );
-        let body: Element<'_, Message> = match radio {
-            Some(RadioState::HardwareOff) => column![
-                scaled_text("Wi-Fi is off", 15.0, scale),
-                meta_text(
-                    "A physical switch or Fn key is turning the radio off. \
-                     Hyprforge can't turn it back on from here.",
-                    13.0,
-                    scale,
+        match radio {
+            Some(RadioState::HardwareOff) => setting_row(
+                0,
+                "Wi-Fi is off",
+                Some(
+                    hint_text(
+                        "A physical switch or Fn key is turning the radio off. \
+                         Hyprforge can't turn it back on from here.",
+                        scale,
+                    )
+                    .into(),
                 ),
-            ]
-            .spacing(spacing::XS)
-            .into(),
-            Some(state) => {
-                let on = state == RadioState::On;
-                row![
-                    checkbox(on).on_toggle(Message::RadioToggled),
-                    scaled_text("Wi-Fi", 15.0, scale),
-                ]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center)
-                .into()
-            }
-            None => meta_text("Wi-Fi status unknown.", BASE_TEXT_SIZE, scale).into(),
-        };
-        section("Wi-Fi", scale, body)
+                iced::widget::Space::new(),
+                scale,
+            ),
+            Some(state) => setting_row(
+                0,
+                "Wi-Fi",
+                None,
+                toggle(state == RadioState::On, scale).on_toggle(Message::RadioToggled),
+                scale,
+            ),
+            None => setting_row(0, "Wi-Fi", Some(hint_text("Status unknown.", scale).into()), iced::widget::Space::new(), scale),
+        }
     }
 
     /// One row per Ethernet port: its name and state, and the one button
     /// [`wired_action`] allows it.
     fn wired_section(&self, scale: FontScale) -> Element<'_, Message> {
-        let mut list = column![].spacing(spacing::SM);
+        let mut rows = Vec::new();
         for (i, port) in self.wired.iter().enumerate() {
-            if i > 0 {
-                list = list.push(hyprforge_ui::widgets::divider());
-            }
-            let line = column![
-                scaled_text("Ethernet", BASE_TEXT_SIZE, scale),
-                meta_text(wired_detail(port), 12.0, scale),
-            ]
-            .spacing(2.0);
             let busy = self.wired_busy.as_deref() == Some(port.interface.as_str());
             let action: Element<'_, Message> = match wired_action(port.state) {
                 Some(WiredAction::Connect) => secondary_button(if busy { "Connecting…" } else { "Connect" })
@@ -741,132 +770,143 @@ impl<B: NetworkBackend + 'static> NetworkModule<B> {
                 }
                 None => row![].into(),
             };
-            list = list.push(
-                row![line.width(Length::Fill), action]
-                    .spacing(spacing::SM)
-                    .align_y(Alignment::Center),
-            );
+            rows.push(setting_row(
+                i,
+                "Ethernet",
+                Some(config_line(wired_detail(port), scale).into()),
+                action,
+                scale,
+            ));
         }
-        section("Wired", scale, list)
+        group("Wired", rows, scale)
     }
 
-    /// The "show in tray" row, in a section of its own at the bottom.
+    /// The "show in tray" row.
     ///
     /// Unlike `radio_row`, this doesn't depend on live NetworkManager
     /// status — the preference lives entirely in `tray_prefs`, loaded
     /// once in `new`. While that load failed, there is no known value to
-    /// show a checkbox for, so this renders text pointing at the error
-    /// banner instead of guessing a state.
-    fn tray_row(&self, scale: FontScale) -> Element<'_, Message> {
+    /// show a switch for, so this says so instead of guessing a state.
+    fn tray_row(&self, index: usize, scale: FontScale) -> Element<'_, Message> {
         match &self.tray_prefs {
-            Ok(prefs) => row![
-                checkbox(prefs.network).on_toggle(Message::TrayToggled),
-                scaled_text("Show in tray", 15.0, scale),
-            ]
-            .spacing(spacing::SM)
-            .align_y(Alignment::Center)
-            .into(),
-            Err(_) => meta_text(
-                "Tray setting unavailable — see the error above.",
-                13.0,
+            Ok(prefs) => setting_row(
+                index,
+                "Show in tray",
+                None,
+                toggle(prefs.network, scale).on_toggle(Message::TrayToggled),
                 scale,
-            )
-            .into(),
+            ),
+            Err(_) => setting_row(
+                index,
+                "Show in tray",
+                Some(hint_text("Unavailable — see the error above.", scale).into()),
+                iced::widget::Space::new(),
+                scale,
+            ),
         }
     }
 
+    /// Every network in range but the one you are on — that one leads the
+    /// page in its own card.
     fn networks_section(&self, scale: FontScale) -> Element<'_, Message> {
-        if self.access_points.is_empty() {
-            return section(
-                "Networks",
-                scale,
-                meta_text("No networks found nearby yet.", BASE_TEXT_SIZE, scale),
-            );
-        }
         let connected_ssid = self.status.as_ref().and_then(|s| s.connected_to.as_ref());
-        let mut list = column![].spacing(spacing::SM);
-        for (i, ap) in self.access_points.iter().enumerate() {
-            if i > 0 {
-                list = list.push(hyprforge_ui::widgets::divider());
-            }
-            list = list.push(self.network_row(i, ap, connected_ssid == Some(&ap.ssid), scale));
+        let rows: Vec<Element<'_, Message>> = self
+            .access_points
+            .iter()
+            .enumerate()
+            .filter(|(_, ap)| connected_ssid != Some(&ap.ssid))
+            .enumerate()
+            .map(|(stripe, (i, ap))| self.network_row(stripe, i, ap, scale))
+            .collect();
+        if rows.is_empty() {
+            return column![
+                section_label("Available", scale),
+                meta_text("No other networks found nearby yet.", BASE_TEXT_SIZE, scale),
+            ]
+            .spacing(spacing::SM)
+            .into();
         }
-        section("Networks", scale, list)
+        group("Available", rows, scale)
     }
 
     fn network_row<'a>(
         &'a self,
+        stripe: usize,
         index: usize,
         ap: &'a AccessPoint,
-        connected: bool,
         scale: FontScale,
     ) -> Element<'a, Message> {
-        let security_label = match ap.security {
-            Security::Open => "Open",
-            Security::Owe => "Enhanced open",
-            Security::Wep => "WEP",
-            Security::Wpa2Personal => "WPA2",
-            Security::Wpa3Personal => "WPA3",
-            Security::Enterprise => "Enterprise (802.1X)",
+        let saved = self.saved.iter().any(|s| s.ssid == ap.ssid);
+        // Facts as chips: band and security, and "saved" when a profile
+        // exists. An open network's chip is the warning colour — the
+        // mockup's orange "open", and a fair thing to be told before
+        // joining one.
+        let security_tint = match ap.security {
+            Security::Open => Tint::Warning,
+            _ => Tint::Dim,
         };
-        // The connected state is shown once, in the action slot on the
-        // right where Join would otherwise be. It was also appended to
-        // the name here, so the row read "Pretty Fly for a WiFi —
-        // Connected ... Connected".
-        let mut line = column![
-            scaled_text(ap.ssid.to_display_string(), BASE_TEXT_SIZE, scale),
-            meta_text(format!("{} \u{b7} {} \u{b7} {}%", ap.band(), security_label, ap.strength), 12.0, scale),
+        let mut facts = row![
+            chip(ap.band(), Tint::Dim, scale),
+            chip(security_label(ap.security), security_tint, scale),
         ]
-        .spacing(2.0);
-
-        // Enterprise is listed but never gets a Join button — the reason
-        // it can't be joined from here is the row's whole second line
-        // instead, so a user scanning the list sees why without having to
-        // click first and be told.
-        if let Some(reason) = ap.security.unsupported_reason() {
-            line = line.push(meta_text(reason, 12.0, scale));
-            return row![line.width(Length::Fill)]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center)
-                .into();
+        .spacing(spacing::XS);
+        if saved {
+            facts = facts.push(chip("saved", Tint::Dim, scale));
         }
 
-        let action: Element<'_, Message> = if connected {
-            meta_text("Connected", 13.0, scale).into()
-        } else {
-            secondary_button("Join").on_press(Message::RowClicked(index)).into()
-        };
+        // Enterprise is listed but never gets a Join button — the reason
+        // it can't be joined from here is the row's hint instead, so a
+        // user scanning the list sees why without having to click first
+        // and be told.
+        let (hint, action): (Element<'a, Message>, Element<'a, Message>) =
+            match ap.security.unsupported_reason() {
+                Some(reason) => (hint_text(reason, scale).into(), iced::widget::Space::new().into()),
+                None => (
+                    facts.into(),
+                    secondary_button("Join").on_press(Message::RowClicked(index)).into(),
+                ),
+            };
 
-        row![line.width(Length::Fill), action]
-            .spacing(spacing::SM)
-            .align_y(Alignment::Center)
-            .into()
+        let bars = hyprforge_ui::glyph::signal(
+            ap.strength,
+            scale.apply(16.0),
+            hyprforge_ui::theme::text(),
+            hyprforge_ui::theme::surface::card_border(),
+        );
+        setting_row(
+            stripe,
+            ap.ssid.to_display_string(),
+            Some(row![bars, hint].spacing(spacing::SM).align_y(Alignment::Center).into()),
+            action,
+            scale,
+        )
     }
 
     fn saved_section(&self, scale: FontScale) -> Element<'_, Message> {
-        let mut list = column![].spacing(spacing::SM);
-        for (i, saved) in self.saved.iter().enumerate() {
-            if i > 0 {
-                list = list.push(hyprforge_ui::widgets::divider());
-            }
-            list = list.push(
-                row![
-                    scaled_text(saved.ssid.to_display_string(), BASE_TEXT_SIZE, scale).width(Length::Fill),
+        let rows = self
+            .saved
+            .iter()
+            .enumerate()
+            .map(|(i, saved)| {
+                setting_row(
+                    i,
+                    saved.ssid.to_display_string(),
+                    None,
                     secondary_button("Forget").on_press(Message::ForgetPressed(saved.id.clone())),
-                ]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center),
-            );
-        }
-        section("Saved networks", scale, list)
+                    scale,
+                )
+            })
+            .collect();
+        group("Saved networks", rows, scale)
     }
 
     fn join_dialog<'a>(&'a self, join: &'a JoinDraft, scale: FontScale) -> Element<'a, Message> {
         let mut body = column![scaled_text(
             format!("Join {}", join.ap.ssid.to_display_string()),
-            16.0,
+            15.0,
             scale,
-        )]
+        )
+        .font(iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT })]
         .spacing(spacing::SM);
 
         if let Some(err) = &join.error {
@@ -877,7 +917,9 @@ impl<B: NetworkBackend + 'static> NetworkModule<B> {
             text_input("Password", join.passphrase.expose())
                 .secure(true)
                 .on_input(|typed| Message::PassphraseChanged(Psk::new(typed)))
-                .on_submit(Message::JoinConfirm),
+                .on_submit(Message::JoinConfirm)
+                .padding(spacing::SM)
+                .style(inset_input_style),
         );
 
         let confirm = if join.connecting {
@@ -886,11 +928,38 @@ impl<B: NetworkBackend + 'static> NetworkModule<B> {
             primary_button("Connect").on_press(Message::JoinConfirm)
         };
         body = body.push(
-            row![confirm, secondary_button("Cancel").on_press(Message::JoinCancel)]
-                .spacing(spacing::SM),
+            row![
+                iced::widget::Space::new().width(Length::Fill),
+                secondary_button("Cancel").on_press(Message::JoinCancel),
+                confirm,
+            ]
+            .spacing(spacing::SM),
         );
 
-        section("Join network", scale, body)
+        hero_card(Tint::Accent, body).into()
+    }
+}
+
+/// A section label over a stack of striped rows — this page's groups.
+fn group<'a>(label: &str, rows: Vec<Element<'a, Message>>, scale: FontScale) -> Element<'a, Message> {
+    column![section_label(label, scale), setting_list(rows)].spacing(spacing::SM).into()
+}
+
+/// The page's content, padded like every other page so its first group
+/// sits a gap below the title the shell draws.
+fn padded(content: iced::widget::Column<'_, Message>) -> Element<'_, Message> {
+    iced::widget::container(content).padding(spacing::LG).width(Length::Fill).into()
+}
+
+/// A network's security, as its chip says it.
+fn security_label(security: Security) -> &'static str {
+    match security {
+        Security::Open => "open",
+        Security::Owe => "enhanced open",
+        Security::Wep => "WEP",
+        Security::Wpa2Personal => "WPA2",
+        Security::Wpa3Personal => "WPA3",
+        Security::Enterprise => "802.1X",
     }
 }
 

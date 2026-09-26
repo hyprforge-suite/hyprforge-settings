@@ -1,8 +1,8 @@
 use hyprforge_core::lua_setup;
 use hyprforge_ui::theme::{spacing, FontScale, BASE_TEXT_SIZE};
 use hyprforge_ui::widgets::{
-    danger_button, divider, meta_text, primary_button, row_field, scaled_text, secondary_button,
-    section, tri_state,
+    config_line, danger_button, meta_text, primary_button, row_field, scaled_text,
+    secondary_button, section, section_label, setting_list, setting_row, toggle, tri_state,
 };
 use crate::module::SettingsModule;
 use hyprforge_windowrules::clients::Client;
@@ -1279,63 +1279,57 @@ impl SettingsModule for WindowRulesModule {
             content = content.push(meta_text(status.clone(), 13.0, scale));
         }
 
-        let mut list = column![].spacing(spacing::SM);
-        if self.rules.is_empty() {
-            list = list.push(meta_text("No rules yet.", BASE_TEXT_SIZE, scale));
-        }
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
         for (i, rule) in self.rules.iter().enumerate() {
-            if i > 0 {
-                list = list.push(divider());
-            }
             let summary = rule
                 .matcher
                 .class
                 .clone()
                 .or_else(|| rule.matcher.title.clone())
                 .unwrap_or_else(|| "(no match)".to_string());
-            let info = column![
-                scaled_text(summary, BASE_TEXT_SIZE, scale),
-                meta_text(rule.name.clone(), 12.0, scale),
-            ]
-            .spacing(spacing::XS)
-            .width(Length::Fill);
             // An armed row swaps its whole action set for the confirm pair,
             // so the only two things that can happen next are the two the
-            // user is being asked about.
-            let actions: Vec<Element<'_, Message>> =
-                if self.pending_delete == Some(PendingDelete::Rule(i)) {
-                    vec![
-                        secondary_button("Keep").on_press(Message::DeleteCancel).into(),
-                        danger_button("Delete for good", Message::DeleteConfirm(i)),
-                    ]
-                } else {
-                    vec![
-                        secondary_button("Up").on_press(Message::MoveUp(i)).into(),
-                        secondary_button("Down").on_press(Message::MoveDown(i)).into(),
-                        secondary_button("Edit").on_press(Message::Edit(i)).into(),
-                        danger_button("Delete", Message::Delete(i)),
-                    ]
-                };
-            list = list.push(
-                container(
-                    row![
-                        checkbox(rule.enabled).on_toggle(move |_| Message::ToggleEnabled(i)),
-                        info,
-                    ]
-                    .extend(actions)
-                    .spacing(spacing::SM)
+            // user is being asked about. Delete is quiet until then, the
+            // same as on Keybinds: red on every row made the danger colour
+            // the list's texture instead of a warning.
+            let actions: Element<'_, Message> = if self.pending_delete == Some(PendingDelete::Rule(i)) {
+                row![
+                    secondary_button("Keep").on_press(Message::DeleteCancel),
+                    danger_button("Delete for good", Message::DeleteConfirm(i)),
+                ]
+                .spacing(spacing::XS)
+                .into()
+            } else {
+                row![
+                    secondary_button("Up").on_press(Message::MoveUp(i)),
+                    secondary_button("Down").on_press(Message::MoveDown(i)),
+                    secondary_button("Edit").on_press(Message::Edit(i)),
+                    secondary_button("Delete").on_press(Message::Delete(i)),
+                ]
+                .spacing(spacing::XS)
+                .into()
+            };
+            rows.push(setting_row(
+                i,
+                summary,
+                Some(config_line(rule.name.clone(), scale).into()),
+                row![toggle(rule.enabled, scale).on_toggle(move |_| Message::ToggleEnabled(i)), actions]
+                    .spacing(spacing::MD)
                     .align_y(iced::Alignment::Center),
-                )
-                .padding([spacing::SM, 0.0]),
-            );
+                scale,
+            ));
         }
 
-        content = content.push(section(
-            "Rules",
-            scale,
-            container(scrollable(list).width(Length::Fill).height(Length::Shrink))
-                .max_height(360.0),
-        ));
+        // The whole list, in the page's one scroll area: it sat in a
+        // scrollable of its own capped at 360px, so a long list scrolled
+        // inside a page that also scrolled. (The window picker keeps its
+        // capped list — that one is a chooser, like a dropdown's menu.)
+        let list: Element<'_, Message> = if rows.is_empty() {
+            meta_text("No rules yet.", BASE_TEXT_SIZE, scale).into()
+        } else {
+            setting_list(rows).into()
+        };
+        content = content.push(column![section_label("Rules", scale), list].spacing(spacing::SM));
         content = content.push(
             container(
                 row![

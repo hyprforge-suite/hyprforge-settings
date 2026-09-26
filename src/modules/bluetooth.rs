@@ -9,8 +9,11 @@ use hyprforge_bluetooth::backend::{for_display, BluetoothBackend};
 use hyprforge_bluetooth::{Address, AdapterState, BluetoothError, Device, PairingPrompt, Passkey, Status};
 use hyprforge_tray::Prefs as TrayPrefs;
 use hyprforge_ui::theme::{self, spacing, FontScale, BASE_TEXT_SIZE};
-use hyprforge_ui::widgets::{divider, meta_text, primary_button, scaled_text, secondary_button, section};
-use iced::widget::{checkbox, column, row};
+use hyprforge_ui::widgets::{
+    hero_card, hint_text, meta_text, primary_button, scaled_text, secondary_button, section_label,
+    setting_list, setting_row, status_dot, toggle, Tint,
+};
+use iced::widget::{column, row, Space};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use std::sync::Arc;
 use std::time::Duration;
@@ -522,18 +525,14 @@ impl<B: BluetoothBackend + 'static> SettingsModule for BluetoothModule<B> {
             // that is exactly when the tray icon is sitting there showing
             // an error nobody can currently do anything about. Hiding the
             // switch that turns it off is its own small dead end.
-            content = content.push(section(
-                "Bluetooth",
-                scale,
-                column![scaled_text(msg.clone(), BASE_TEXT_SIZE, scale), self.tray_row(scale)]
-                    .spacing(spacing::SM),
-            ));
-            return content.into();
+            content = content.push(scaled_text(msg.clone(), BASE_TEXT_SIZE, scale));
+            content = content.push(group("Tray", vec![self.tray_row(0, scale)], scale));
+            return padded(content);
         }
 
         if self.loading {
             content = content.push(meta_text("Loading…", BASE_TEXT_SIZE, scale));
-            return content.into();
+            return padded(content);
         }
 
         content = content.push(self.adapter_row(scale));
@@ -548,9 +547,7 @@ impl<B: BluetoothBackend + 'static> SettingsModule for BluetoothModule<B> {
             content = content.push(self.pairing_dialog(prompt, scale));
         }
 
-        // Padded like every other page, so its first section sits a
-        // gap below the title the shell draws, not flush against it.
-        iced::widget::container(content).padding(spacing::LG).width(iced::Length::Fill).into()
+        padded(content)
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -588,51 +585,54 @@ impl<B: BluetoothBackend + 'static> BluetoothModule<B> {
             !adapter_offers_toggle(state),
             "the toggle arm and the no-toggle arms below must stay in sync with this helper",
         );
-        let body: Element<'_, Message> = match state {
-            Some(AdapterState::HardwareBlocked) => column![
-                scaled_text("Bluetooth is off", 15.0, scale),
-                meta_text(
-                    "A physical switch or Fn key is blocking the radio. \
-                     Hyprforge can't turn it back on from here.",
-                    13.0,
-                    scale,
+        let adapter = match state {
+            Some(AdapterState::HardwareBlocked) => setting_row(
+                0,
+                "Bluetooth is off",
+                Some(
+                    hint_text(
+                        "A physical switch or Fn key is blocking the radio. \
+                         Hyprforge can't turn it back on from here.",
+                        scale,
+                    )
+                    .into(),
                 ),
-            ]
-            .spacing(spacing::XS)
-            .into(),
-            Some(AdapterState::Changing) => meta_text("Bluetooth is changing…", BASE_TEXT_SIZE, scale).into(),
-            Some(state) => {
-                let on = state == AdapterState::On;
-                row![
-                    checkbox(on).on_toggle(Message::AdapterToggled),
-                    scaled_text("Bluetooth", 15.0, scale),
-                ]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center)
-                .into()
+                Space::new(),
+                scale,
+            ),
+            Some(AdapterState::Changing) => {
+                setting_row(0, "Bluetooth", Some(hint_text("Changing…", scale).into()), Space::new(), scale)
             }
-            None => meta_text("Bluetooth status unknown.", BASE_TEXT_SIZE, scale).into(),
+            Some(state) => setting_row(
+                0,
+                "Bluetooth",
+                None,
+                toggle(state == AdapterState::On, scale).on_toggle(Message::AdapterToggled),
+                scale,
+            ),
+            None => setting_row(0, "Bluetooth", Some(hint_text("Status unknown.", scale).into()), Space::new(), scale),
         };
-        section("Bluetooth", scale, column![body, self.tray_row(scale)].spacing(spacing::SM))
+        group("Bluetooth", vec![adapter, self.tray_row(1, scale)], scale)
     }
 
-    /// The "show in tray" row, appended to the Bluetooth section. Same
-    /// shape and same reasoning as `network::NetworkModule::tray_row`.
-    fn tray_row(&self, scale: FontScale) -> Element<'_, Message> {
+    /// The "show in tray" row. Same shape and same reasoning as
+    /// `network::NetworkModule::tray_row`.
+    fn tray_row(&self, index: usize, scale: FontScale) -> Element<'_, Message> {
         match &self.tray_prefs {
-            Ok(prefs) => row![
-                checkbox(prefs.bluetooth).on_toggle(Message::TrayToggled),
-                scaled_text("Show in tray", 15.0, scale),
-            ]
-            .spacing(spacing::SM)
-            .align_y(Alignment::Center)
-            .into(),
-            Err(_) => meta_text(
-                "Tray setting unavailable — see the error above.",
-                13.0,
+            Ok(prefs) => setting_row(
+                index,
+                "Show in tray",
+                None,
+                toggle(prefs.bluetooth, scale).on_toggle(Message::TrayToggled),
                 scale,
-            )
-            .into(),
+            ),
+            Err(_) => setting_row(
+                index,
+                "Show in tray",
+                Some(hint_text("Unavailable — see the error above.", scale).into()),
+                Space::new(),
+                scale,
+            ),
         }
     }
 
@@ -640,57 +640,56 @@ impl<B: BluetoothBackend + 'static> BluetoothModule<B> {
     /// opening the screen. See the comment on [`Message::ScanToggled`].
     fn scan_row(&self, scale: FontScale) -> Element<'_, Message> {
         let discovering = self.status.as_ref().is_some_and(|s| s.discovering);
-        section(
+        group(
             "Scan",
+            vec![setting_row(
+                0,
+                if discovering { "Scanning for devices…" } else { "Scan for devices" },
+                None,
+                toggle(discovering, scale).on_toggle(Message::ScanToggled),
+                scale,
+            )],
             scale,
-            row![
-                checkbox(discovering).on_toggle(Message::ScanToggled),
-                scaled_text(
-                    if discovering { "Scanning for devices…" } else { "Scan for devices" },
-                    15.0,
-                    scale,
-                ),
-            ]
-            .spacing(spacing::SM)
-            .align_y(Alignment::Center),
         )
     }
 
     fn devices_section(&self, scale: FontScale) -> Element<'_, Message> {
         if self.devices.is_empty() {
-            return section(
-                "Devices",
-                scale,
+            return column![
+                section_label("Devices", scale),
                 meta_text("No devices yet. Turn on Scan to look for nearby ones.", BASE_TEXT_SIZE, scale),
-            );
+            ]
+            .spacing(spacing::SM)
+            .into();
         }
-        let mut list = column![].spacing(spacing::SM);
-        for (i, device) in self.devices.iter().enumerate() {
-            if i > 0 {
-                list = list.push(divider());
-            }
-            list = list.push(self.device_row(device, scale));
-        }
-        section("Devices", scale, list)
+        let rows = self
+            .devices
+            .iter()
+            .enumerate()
+            .map(|(i, device)| self.device_row(i, device, scale))
+            .collect();
+        group("Devices", rows, scale)
     }
 
-    fn device_row<'a>(&'a self, device: &'a Device, scale: FontScale) -> Element<'a, Message> {
+    fn device_row<'a>(&'a self, index: usize, device: &'a Device, scale: FontScale) -> Element<'a, Message> {
         // A device that has never told us its name shows its address, and
         // presenting that as though it were a name is worse than saying
         // plainly that no name is known yet — same reasoning `Device` docs
         // give for keeping `alias` and `name` separate.
-        let name: Element<'_, Message> = if device.is_unnamed() {
-            meta_text(format!("Unnamed device ({})", device.address), BASE_TEXT_SIZE, scale).into()
+        let name = if device.is_unnamed() {
+            format!("Unnamed device ({})", device.address)
         } else {
-            scaled_text(device.alias.clone(), BASE_TEXT_SIZE, scale).into()
+            device.alias.clone()
         };
 
-        let connection = if device.connected { " \u{b7} Connected" } else { "" };
-        let line = column![
-            name,
-            meta_text(format!("{}{}", device.kind.label(), connection), 12.0, scale),
-        ]
-        .spacing(2.0);
+        // The kind, and a green dot while connected — the dot the sidebar
+        // shows for this page, on the row that earns it.
+        let mut facts = row![hint_text(device.kind.label(), scale)]
+            .spacing(spacing::SM)
+            .align_y(Alignment::Center);
+        if device.connected {
+            facts = facts.push(status_dot(Tint::Success, scale)).push(hint_text("Connected", scale));
+        }
 
         // `Device::unsupported_reason` is *not* read here on purpose: its
         // "use bluetoothctl" string is stale now that pairing has a
@@ -700,13 +699,13 @@ impl<B: BluetoothBackend + 'static> BluetoothModule<B> {
         // instead of an explanation, the same way a device with nothing
         // else to offer used to get only text.
         if !device.paired {
-            let pair_action: Element<'_, Message> = secondary_button("Pair")
-                .on_press(Message::PairPressed(device.address.clone()))
-                .into();
-            return row![line.width(Length::Fill), pair_action]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center)
-                .into();
+            return setting_row(
+                index,
+                name,
+                Some(facts.into()),
+                secondary_button("Pair").on_press(Message::PairPressed(device.address.clone())),
+                scale,
+            );
         }
 
         let connect_action: Element<'_, Message> = if device.connected {
@@ -719,26 +718,19 @@ impl<B: BluetoothBackend + 'static> BluetoothModule<B> {
                 .into()
         };
 
-        let actions = column![
-            row![connect_action, secondary_button("Forget").on_press(Message::ForgetPressed(device.address.clone()))]
-                .spacing(spacing::SM),
-            row![
-                checkbox(device.trusted)
-                    .on_toggle({
-                        let address = device.address.clone();
-                        move |v| Message::TrustToggled(address.clone(), v)
-                    }),
-                meta_text("Trust (reconnect automatically)", 12.0, scale),
-            ]
-            .spacing(spacing::SM)
-            .align_y(Alignment::Center),
+        // Trust as a labelled switch beside the buttons: it is a setting
+        // of the device, on or off, not a thing to include.
+        let address = device.address.clone();
+        let actions = row![
+            hint_text("Trust", scale),
+            toggle(device.trusted, scale).on_toggle(move |v| Message::TrustToggled(address.clone(), v)),
+            connect_action,
+            secondary_button("Forget").on_press(Message::ForgetPressed(device.address.clone())),
         ]
-        .spacing(spacing::XS);
+        .spacing(spacing::SM)
+        .align_y(Alignment::Center);
 
-        row![line.width(Length::Fill), actions]
-            .spacing(spacing::SM)
-            .align_y(Alignment::Center)
-            .into()
+        setting_row(index, name, Some(facts.into()), actions, scale)
     }
 
     /// The pairing conversation, shaped like `network::join_dialog` —
@@ -804,8 +796,19 @@ impl<B: BluetoothBackend + 'static> BluetoothModule<B> {
         actions = actions.push(secondary_button(cancel_label).on_press(Message::PairingCancelled));
         body = body.push(actions);
 
-        section("Pairing", scale, body)
+        hero_card(Tint::Accent, body).into()
     }
+}
+
+/// A section label over a stack of striped rows — this page's groups.
+fn group<'a>(label: &str, rows: Vec<Element<'a, Message>>, scale: FontScale) -> Element<'a, Message> {
+    column![section_label(label, scale), setting_list(rows)].spacing(spacing::SM).into()
+}
+
+/// The page's content, padded like every other page so its first group
+/// sits a gap below the title the shell draws.
+fn padded(content: iced::widget::Column<'_, Message>) -> Element<'_, Message> {
+    iced::widget::container(content).padding(spacing::LG).width(Length::Fill).into()
 }
 
 /// Whether the pairing dialog should render a button that answers the

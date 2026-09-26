@@ -22,8 +22,11 @@
 use crate::module::SettingsModule;
 use hyprforge_tray::Prefs;
 use hyprforge_ui::theme::{self, spacing, FontScale};
-use hyprforge_ui::widgets::{meta_text, scaled_text, section};
-use iced::widget::{checkbox, column, row, slider};
+use hyprforge_ui::widgets::{
+    config_line, hint_text, scaled_text, section_label, setting_list, setting_row, slider_style,
+    toggle,
+};
+use iced::widget::{column, slider};
 use iced::{Alignment, Element, Length, Task};
 
 /// The slider's own range for [`Prefs::menu_y_offset`].
@@ -192,30 +195,31 @@ impl SettingsModule for TrayModule {
 }
 
 impl TrayModule {
-    /// The six icon toggles, one section — mirrors the "Show in tray"
-    /// checkbox Network and Bluetooth each already carry for their own
-    /// icon, gathered here alongside the four that have no such checkbox
+    /// The six icon toggles, one group — mirrors the "Show in tray"
+    /// switch Network and Bluetooth each already carry for their own
+    /// icon, gathered here alongside the four that have no such switch
     /// anywhere else (keep-awake, night light, battery and power profile,
     /// and display layouts).
     fn icons_section(&self, scale: FontScale) -> Element<'_, Message> {
-        let body: Element<'_, Message> = match &self.tray_prefs {
-            Ok(prefs) => column![
-                icon_row(prefs.network, "Network (Wi-Fi and Ethernet)", Message::NetworkToggled, scale),
-                icon_row(prefs.bluetooth, "Bluetooth", Message::BluetoothToggled, scale),
-                icon_row(prefs.keep_awake, "Keep awake", Message::KeepAwakeToggled, scale),
-                icon_row(prefs.night_light, "Night light", Message::NightLightToggled, scale),
-                icon_row(prefs.power, "Battery and power profile", Message::PowerToggled, scale),
-                icon_row(prefs.displays, "Display layouts", Message::DisplaysToggled, scale),
+        let rows: Vec<Element<'_, Message>> = match &self.tray_prefs {
+            Ok(prefs) => [
+                (prefs.network, "Network (Wi-Fi and Ethernet)", Message::NetworkToggled as fn(bool) -> Message),
+                (prefs.bluetooth, "Bluetooth", Message::BluetoothToggled),
+                (prefs.keep_awake, "Keep awake", Message::KeepAwakeToggled),
+                (prefs.night_light, "Night light", Message::NightLightToggled),
+                (prefs.power, "Battery and power profile", Message::PowerToggled),
+                (prefs.displays, "Display layouts", Message::DisplaysToggled),
             ]
-            .spacing(spacing::SM)
-            .into(),
-            Err(_) => meta_text("Tray settings unavailable — see the error above.", 13.0, scale).into(),
+            .into_iter()
+            .enumerate()
+            .map(|(i, (shown, label, message))| icon_row(i, shown, label, message, scale))
+            .collect(),
+            Err(_) => vec![unavailable_row(scale)],
         };
-        section("Tray icons", scale, body)
+        group("Tray icons", rows, scale)
     }
 
-    /// The menu offset, as its own section — this is the setting the
-    /// whole screen exists for.
+    /// The menu offset — the setting the whole screen exists for.
     ///
     /// A bar's *reserved* screen space and the space it *visibly* takes
     /// up are not always the same number — padding, a border around the
@@ -226,34 +230,39 @@ impl TrayModule {
     /// end up tucked slightly under the bar, or with an odd gap beneath
     /// it, until this is turned up (or down) to match.
     fn offset_section(&self, scale: FontScale) -> Element<'_, Message> {
-        let body: Element<'_, Message> = match &self.tray_prefs {
-            Ok(_) => column![
-                meta_text(
-                    "How far below your bar the right-click menu opens. Raise this if the \
-                     menu overlaps the bar or leaves a gap under it; the default clears an \
-                     ordinary waybar-height bar with nothing configured.",
-                    13.0,
-                    scale,
+        let row: Element<'_, Message> = match &self.tray_prefs {
+            Ok(_) => setting_row(
+                0,
+                "Menu offset",
+                Some(
+                    hint_text(
+                        "How far below your bar the right-click menu opens. Raise this if the \
+                         menu overlaps the bar or leaves a gap under it; the default clears an \
+                         ordinary waybar-height bar with nothing configured.",
+                        scale,
+                    )
+                    .into(),
                 ),
-                row![
+                iced::widget::row![
                     slider(OFFSET_RANGE, self.offset_draft, Message::OffsetChanged)
                         .on_release(Message::OffsetReleased)
-                        .width(Length::Fixed(280.0)),
-                    scaled_text(format!("{}px", self.offset_draft), 15.0, scale),
+                        .style(slider_style)
+                        .width(Length::Fixed(scale.apply(150.0))),
+                    config_line(format!("{} px", self.offset_draft), scale)
+                        .color(theme::text()),
                 ]
-                .spacing(spacing::MD)
+                .spacing(spacing::SM)
                 .align_y(Alignment::Center),
-            ]
-            .spacing(spacing::SM)
-            .into(),
-            Err(_) => meta_text("Tray settings unavailable — see the error above.", 13.0, scale).into(),
+                scale,
+            ),
+            Err(_) => unavailable_row(scale),
         };
-        section("Menu position", scale, body)
+        group("Menu position", vec![row], scale)
     }
 
     /// What a click outside an open tray menu does.
     ///
-    /// Worth its own section rather than a line in "Menu position",
+    /// Worth its own group rather than a row in "Menu position",
     /// because it is not about where the menu is: it changes how the
     /// popup asks the compositor for the keyboard, and that is what
     /// decides whether the click that dismissed it also reaches whatever
@@ -261,43 +270,55 @@ impl TrayModule {
     /// keyboard, where a stray click closing the menu is a nuisance
     /// rather than a convenience.
     fn dismissal_section(&self, scale: FontScale) -> Element<'_, Message> {
-        let body: Element<'_, Message> = match &self.tray_prefs {
-            Ok(prefs) => column![
-                row![
-                    checkbox(prefs.menu_closes_on_click_outside).on_toggle(Message::ClickOutsideToggled),
-                    scaled_text("Close the menu when I click somewhere else", 15.0, scale),
-                ]
-                .spacing(spacing::SM)
-                .align_y(Alignment::Center),
-                meta_text(
-                    "On, the menu behaves like every other menu on the desktop: clicking \
-                     away dismisses it, and that click still reaches whatever you clicked \
-                     — including another tray icon. Off, the menu keeps the keyboard until \
-                     you choose a row or press Escape.",
-                    13.0,
-                    scale,
+        let row: Element<'_, Message> = match &self.tray_prefs {
+            Ok(prefs) => setting_row(
+                0,
+                "Close the menu when I click somewhere else",
+                Some(
+                    hint_text(
+                        "On, the menu behaves like every other menu on the desktop: clicking \
+                         away dismisses it, and that click still reaches whatever you clicked \
+                         — including another tray icon. Off, the menu keeps the keyboard until \
+                         you choose a row or press Escape.",
+                        scale,
+                    )
+                    .into(),
                 ),
-            ]
-            .spacing(spacing::SM)
-            .into(),
-            Err(_) => meta_text("Tray settings unavailable — see the error above.", 13.0, scale).into(),
+                toggle(prefs.menu_closes_on_click_outside, scale).on_toggle(Message::ClickOutsideToggled),
+                scale,
+            ),
+            Err(_) => unavailable_row(scale),
         };
-        section("Clicking away", scale, body)
+        group("Clicking away", vec![row], scale)
     }
+}
+
+/// A section label over a stack of striped rows — this page's groups.
+fn group<'a>(label: &str, rows: Vec<Element<'a, Message>>, scale: FontScale) -> Element<'a, Message> {
+    column![section_label(label, scale), setting_list(rows)].spacing(spacing::SM).into()
+}
+
+/// What a group shows when `tray.toml` could not be read.
+fn unavailable_row<'a>(scale: FontScale) -> Element<'a, Message> {
+    setting_row(
+        0,
+        "Tray settings unavailable",
+        Some(hint_text("See the error above.", scale).into()),
+        iced::widget::Space::new(),
+        scale,
+    )
 }
 
 /// One icon-toggle row, factored out because all six are identical apart
 /// from which field and which label.
 fn icon_row<'a>(
+    index: usize,
     shown: bool,
     label: &'static str,
     message: fn(bool) -> Message,
     scale: FontScale,
 ) -> Element<'a, Message> {
-    row![checkbox(shown).on_toggle(message), scaled_text(label, 15.0, scale)]
-        .spacing(spacing::SM)
-        .align_y(Alignment::Center)
-        .into()
+    setting_row(index, label, None, toggle(shown, scale).on_toggle(message), scale)
 }
 
 #[cfg(test)]

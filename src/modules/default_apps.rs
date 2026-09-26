@@ -37,9 +37,11 @@
 //! entries and does not touch the shared MIME database.
 
 use crate::module::SettingsModule;
-use crate::modules::setting_rows::labelled;
 use hyprforge_ui::theme::{self, spacing, FontScale};
-use hyprforge_ui::widgets::{meta_text, scaled_text, secondary_button, section};
+use hyprforge_ui::widgets::{
+    config_line, dropdown_menu_style, dropdown_style, hint_text, inset_input_style, meta_text,
+    scaled_text, secondary_button, section, section_label, setting_list, setting_row,
+};
 use iced::widget::{column, pick_list, row, text_input};
 use iced::{Element, Length, Task};
 use std::collections::{BTreeMap, BTreeSet};
@@ -545,29 +547,32 @@ impl SettingsModule for DefaultAppsModule {
             return content.into();
         }
 
-        let mut rows = column![].spacing(spacing::MD);
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
         for ((index, kind), prepared) in KINDS.iter().enumerate().zip(&self.rows) {
             let choices = prepared.choices.clone();
             let control: Element<'_, Message> = if choices.is_empty() {
                 // Not an empty list to click on: a kind with nothing
                 // installed is a statement, and an empty dropdown is a
                 // puzzle.
-                meta_text("Nothing installed opens these", 13.0, scale).into()
+                hint_text("Nothing installed opens these", scale).into()
             } else {
-                pick_list(choices, prepared.current.clone(), move |choice| Message::Chosen(index, choice))
-                    .width(Length::Fill)
-                    .text_size(scale.apply(13.0))
-                    .into()
+                styled_dropdown(
+                    pick_list(choices, prepared.current.clone(), move |choice| Message::Chosen(index, choice)),
+                    scale,
+                )
             };
-            let mut cell = column![labelled(kind.label, control, scale)].spacing(spacing::XS);
-            for note in prepared.disagreements.clone() {
-                cell = cell.push(meta_text(note, 12.0, scale));
-            }
-            rows = rows.push(cell);
+            // A disagreement — two places naming different defaults — is
+            // the row's hint, where it sits beside the choice it is about.
+            let hint = (!prepared.disagreements.is_empty()).then(|| {
+                hint_text(prepared.disagreements.join(" "), scale)
+                    .color(theme::warning())
+                    .into()
+            });
+            rows.push(setting_row(index, kind.label, hint, control, scale));
         }
 
-        content = content.push(section("What opens what", scale, rows));
-        content = content.push(section("Every file type", scale, self.search_view(scale)));
+        content = content.push(group("What opens what", setting_list(rows).into(), scale));
+        content = content.push(group("Every file type", self.search_view(scale), scale));
         content = content.push(meta_text(
             "Changing any of these writes your own mimeapps.list, which every application \
              on the desktop reads — not just Hyprforge's.",
@@ -580,29 +585,56 @@ impl SettingsModule for DefaultAppsModule {
     }
 }
 
+/// A section label over its content — this page's groups.
+fn group<'a>(label: &str, body: Element<'a, Message>, scale: FontScale) -> Element<'a, Message> {
+    column![section_label(label, scale), body].spacing(spacing::SM).into()
+}
+
+/// A dropdown in the shared inset style, one width for all of them so the
+/// rows line up however long an application's name is.
+fn styled_dropdown<'a, T, L, V>(
+    list: iced::widget::PickList<'a, T, L, V, Message>,
+    scale: FontScale,
+) -> Element<'a, Message>
+where
+    T: ToString + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
+    V: std::borrow::Borrow<T> + 'a,
+{
+    // Blank said nothing; with no default chosen the desktop opens the
+    // file with whatever registered for it, so the placeholder says that
+    // — in the same words the empty search result uses.
+    list.placeholder("Not chosen — whatever registered for it")
+        .style(dropdown_style)
+        .menu_style(dropdown_menu_style)
+        .text_size(scale.apply(13.0))
+        .width(Length::Fixed(scale.apply(280.0)))
+        .into()
+}
+
 impl DefaultAppsModule {
     /// The search box and the rows it found.
     fn search_view(&self, scale: FontScale) -> Element<'_, Message> {
         let mut found = column![text_input("Search all file types\u{2026}", &self.search)
             .on_input(Message::Searched)
-            .padding(spacing::SM)]
+            .padding(spacing::SM)
+            .style(inset_input_style)]
         .spacing(spacing::MD);
 
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
         for prepared in &self.matches {
             let control: Element<'_, Message> = if prepared.choices.is_empty() {
-                meta_text("Nothing installed opens this", 13.0, scale).into()
+                hint_text("Nothing installed opens this", scale).into()
             } else {
                 let mime = prepared.mime.clone();
-                pick_list(prepared.choices.clone(), prepared.current.clone(), move |choice| {
-                    Message::TypeChosen(mime.clone(), choice)
-                })
-                .width(Length::Fill)
-                .text_size(scale.apply(13.0))
-                .into()
+                styled_dropdown(
+                    pick_list(prepared.choices.clone(), prepared.current.clone(), move |choice| {
+                        Message::TypeChosen(mime.clone(), choice)
+                    }),
+                    scale,
+                )
             };
-            let mut line = row![labelled(&prepared.label, control, scale)]
-                .spacing(spacing::MD)
-                .align_y(iced::Alignment::Center);
+            let mut line = row![control].spacing(spacing::SM).align_y(iced::Alignment::Center);
             if prepared.clearable {
                 // Only for a line in the file this screen writes: see
                 // `yours_in`. Clearing is how somebody puts a type back
@@ -613,14 +645,15 @@ impl DefaultAppsModule {
                         .on_press(Message::TypeCleared(prepared.mime.clone())),
                 );
             }
-            // The type's own name under its description, because the
-            // description is what a person recognises and the name is
-            // what every other tool on the machine will call it.
-            let mut cell = column![line].spacing(spacing::XS);
-            if prepared.label != prepared.mime {
-                cell = cell.push(meta_text(prepared.mime.clone(), 12.0, scale));
-            }
-            found = found.push(cell);
+            // The type's own name under its description, in mono,
+            // because the description is what a person recognises and the
+            // name is what every other tool on the machine will call it.
+            let hint = (prepared.label != prepared.mime)
+                .then(|| config_line(prepared.mime.clone(), scale).into());
+            rows.push(setting_row(rows.len(), prepared.label.clone(), hint, line, scale));
+        }
+        if !rows.is_empty() {
+            found = found.push(setting_list(rows));
         }
 
         if self.matches.is_empty() {

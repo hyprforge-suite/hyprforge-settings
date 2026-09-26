@@ -15,13 +15,14 @@ use std::path::Path;
 use hyprforge_tray::Prefs as TrayPrefs;
 use hyprforge_ui::theme::{spacing, FontScale};
 use hyprforge_ui::widgets::{
-    danger_button, divider, meta_text, primary_button, scaled_text, secondary_button, section,
+    divider, dropdown_menu_style, dropdown_style, hero_card, hint_text,
+    inset_input_style, meta_text, primary_button, scaled_text, secondary_button, section,
+    section_label, setting_list, setting_row, toggle, Tint,
 };
 use crate::module::SettingsModule;
-use crate::modules::setting_rows::labelled;
 use hyprforge_ecosystem::apply::{self, Applied};
 use hyprforge_ecosystem::{idle, import, portal, sunset, wallpaper};
-use iced::widget::{checkbox, column, container, pick_list, row, text_input};
+use iced::widget::{checkbox, column, container, pick_list, row, text_input, Space};
 use iced::{Element, Length, Task};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -1138,18 +1139,17 @@ impl SettingsModule for DesktopModule {
 impl DesktopModule {
     fn wallpaper_view(&self, scale: FontScale) -> Element<'_, Message> {
         let problems = self.wallpapers.invalid();
-        let mut body = column![meta_text(
+        let mut page = column![group_intro(
+            "Wallpaper",
             "A wallpaper with no monitor is the fallback: it covers every screen \
              that hasn't got one of its own, which is what makes a setup survive \
              plugging a different display in.",
-            12.0,
             scale,
         )]
-        .spacing(spacing::SM);
+        .spacing(spacing::MD);
 
         for (i, entry) in self.wallpapers.entries.iter().enumerate() {
-            body = body.push(divider());
-            let mut fields = column![].spacing(spacing::SM);
+            let mut rows: Vec<Element<'_, Message>> = Vec::new();
 
             let monitors: Vec<String> = std::iter::once(ALL_MONITORS.to_string())
                 .chain(self.monitors.iter().cloned())
@@ -1159,82 +1159,97 @@ impl DesktopModule {
             } else {
                 entry.monitor.clone()
             });
-            fields = fields.push(labelled(
+            rows.push(setting_row(
+                rows.len(),
                 "Screen",
-                pick_list(monitors, selected, move |choice: String| {
+                None,
+                dropdown(pick_list(monitors, selected, move |choice: String| {
                     let value = if choice == ALL_MONITORS { String::new() } else { choice };
                     Message::WallpaperChanged(i, Field::Monitor, value)
-                })
-                .into(),
+                }), scale),
                 scale,
             ));
 
             let images = options_including(&self.images, &entry.path);
-            fields = fields.push(labelled(
+            rows.push(setting_row(
+                rows.len(),
                 "Image or folder",
-                pick_list(images, Some(entry.path.clone()).filter(|p| !p.is_empty()), move |choice: String| {
-                    Message::WallpaperChanged(i, Field::Path, choice)
-                })
-                .into(),
+                None,
+                dropdown(
+                    pick_list(images, Some(entry.path.clone()).filter(|p| !p.is_empty()), move |choice: String| {
+                        Message::WallpaperChanged(i, Field::Path, choice)
+                    }),
+                    scale,
+                ),
                 scale,
             ));
 
             let modes: Vec<String> = wallpaper::FitMode::ALL.iter().map(|m| m.to_string()).collect();
-            fields = fields.push(labelled(
+            rows.push(setting_row(
+                rows.len(),
                 "Fit",
-                pick_list(modes, Some(entry.fit_mode.to_string()), move |choice: String| {
+                None,
+                dropdown(pick_list(modes, Some(entry.fit_mode.to_string()), move |choice: String| {
                     Message::WallpaperChanged(i, Field::FitMode, choice)
-                })
-                .into(),
+                }), scale),
                 scale,
             ));
 
             // Only for a folder: these options mean nothing for one image,
             // and showing them would suggest a single image cycles.
             if entry.is_directory() {
-                fields = fields.push(labelled(
+                rows.push(setting_row(
+                    rows.len(),
                     "Change every (seconds)",
-                    text_input("30", &self.draft(i, Field::Timeout, entry.timeout.map(|t| t.to_string()).unwrap_or_default()))
-                        .on_input(move |v| Message::WallpaperChanged(i, Field::Timeout, v))
-                        .on_submit(Message::Commit)
-                        .padding(spacing::SM)
-                        .width(Length::Fixed(90.0))
-                        .into(),
+                    None,
+                    short_field(
+                        text_input("30", &self.draft(i, Field::Timeout, entry.timeout.map(|t| t.to_string()).unwrap_or_default()))
+                            .on_input(move |v| Message::WallpaperChanged(i, Field::Timeout, v))
+                            .on_submit(Message::Commit),
+                        scale,
+                    ),
                     scale,
                 ));
-                fields = fields.push(
-                    row![
-                        checkbox(entry.random_order)
-                            .on_toggle(move |v| Message::WallpaperToggled(i, Field::RandomOrder, v)),
-                        scaled_text("Shuffle", 13.0, scale),
-                        checkbox(entry.recursive)
-                            .on_toggle(move |v| Message::WallpaperToggled(i, Field::Recursive, v)),
-                        scaled_text("Include subfolders", 13.0, scale),
-                    ]
-                    .spacing(spacing::SM)
-                    .align_y(iced::Alignment::Center),
-                );
+                rows.push(setting_row(
+                    rows.len(),
+                    "Shuffle",
+                    None,
+                    toggle(entry.random_order, scale)
+                        .on_toggle(move |v| Message::WallpaperToggled(i, Field::RandomOrder, v)),
+                    scale,
+                ));
+                rows.push(setting_row(
+                    rows.len(),
+                    "Include subfolders",
+                    None,
+                    toggle(entry.recursive, scale)
+                        .on_toggle(move |v| Message::WallpaperToggled(i, Field::Recursive, v)),
+                    scale,
+                ));
             }
 
-            if let Some((_, problem)) = problems.iter().find(|(index, _)| *index == i) {
-                fields = fields.push(scaled_text(problem.clone(), 12.0, scale));
-            }
-            fields = fields.push(danger_button("Remove", Message::WallpaperRemoved(i)));
-            body = body.push(fields);
+            let problem = problems.iter().find(|(index, _)| *index == i).map(|(_, p)| p.clone());
+            let title = if entry.is_fallback() {
+                format!("Wallpaper {} \u{b7} all screens", i + 1)
+            } else {
+                format!("Wallpaper {} \u{b7} {}", i + 1, entry.monitor)
+            };
+            page = page.push(entry_block(title, Message::WallpaperRemoved(i), rows, problem, scale));
         }
 
-        body = body.push(divider());
-        body = body.push(
-            row![
-                secondary_button("Add a wallpaper").on_press(Message::WallpaperAdded),
-                checkbox(self.wallpapers.splash.unwrap_or(true))
-                    .on_toggle(Message::SplashToggled),
-                scaled_text("Show the Hyprland splash", 13.0, scale),
-            ]
-            .spacing(spacing::MD)
-            .align_y(iced::Alignment::Center),
-        );
-        section("Wallpaper", scale, body)
+        page = page.push(secondary_button("Add a wallpaper").on_press(Message::WallpaperAdded));
+        page = page.push(group(
+            "Splash",
+            vec![setting_row(
+                0,
+                "Show the Hyprland splash",
+                None,
+                toggle(self.wallpapers.splash.unwrap_or(true), scale).on_toggle(Message::SplashToggled),
+                scale,
+            )],
+            scale,
+        ));
+        page.into()
     }
 
     /// The review shown between pressing Import and anything being
@@ -1326,230 +1341,229 @@ impl DesktopModule {
     }
 
     fn portal_view(&self, scale: FontScale) -> Element<'_, Message> {
-        let mut body = column![meta_text(
+        let mut page = column![group_intro(
+            "Screen sharing",
             "What happens when an app asks to capture your screen. These are \
              read by xdg-desktop-portal-hyprland, which is what Firefox, Chrome \
              and Discord actually talk to.",
-            12.0,
             scale,
         )]
-        .spacing(spacing::SM);
+        .spacing(spacing::MD);
 
         for (index, problem) in self.portal.invalid() {
             let _ = index;
-            body = body.push(scaled_text(problem, 13.0, scale));
+            page = page.push(scaled_text(problem, 13.0, scale).color(hyprforge_ui::theme::warning()));
         }
 
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
         // Empty means "whatever the portal does by default", which is a
         // real choice and has to be reachable — so the placeholder says
         // the number rather than leaving the user to guess what blank does.
-        body = body.push(labelled(
+        rows.push(setting_row(
+            rows.len(),
             "Maximum frame rate",
-            text_input(
-                &format!("{} (the portal's default)", portal::DEFAULT_MAX_FPS),
-                &self.draft(
-                    0,
-                    Field::MaxFps,
-                    self.portal.max_fps.map(|f| f.to_string()).unwrap_or_default(),
-                ),
-            )
-            .on_input(move |v| Message::PortalChanged(Field::MaxFps, v))
-            .into(),
+            Some(
+                hint_text(
+                    "0 means no limit. Lowering it is the usual fix for a share that \
+                     stutters or heats the machine up.",
+                    scale,
+                )
+                .into(),
+            ),
+            field(
+                text_input(
+                    &format!("{} (the portal's default)", portal::DEFAULT_MAX_FPS),
+                    &self.draft(
+                        0,
+                        Field::MaxFps,
+                        self.portal.max_fps.map(|f| f.to_string()).unwrap_or_default(),
+                    ),
+                )
+                .on_input(move |v| Message::PortalChanged(Field::MaxFps, v)),
+                scale,
+            ),
             scale,
         ));
-        body = body.push(meta_text(
-            "0 means no limit. Lowering it is the usual fix for a share that \
-             stutters or heats the machine up.",
-            12.0,
-            scale,
-        ));
-
-        body = body.push(labelled(
+        rows.push(setting_row(
+            rows.len(),
             "Share picker",
-            text_input(
-                portal::DEFAULT_PICKER,
-                &self.draft(0, Field::PickerBinary, &self.portal.custom_picker_binary),
-            )
-            .on_input(move |v| Message::PortalChanged(Field::PickerBinary, v))
-            .into(),
+            None,
+            field(
+                text_input(
+                    portal::DEFAULT_PICKER,
+                    &self.draft(0, Field::PickerBinary, &self.portal.custom_picker_binary),
+                )
+                .on_input(move |v| Message::PortalChanged(Field::PickerBinary, v)),
+                scale,
+            ),
             scale,
         ));
-
-        body = body.push(labelled(
+        rows.push(setting_row(
+            rows.len(),
             "Pointer in the stream",
-            pick_list(portal::CursorMode::ALL, Some(self.portal.cursor_mode), |mode| {
-                Message::PortalCursorMode(mode)
-            })
-            .into(),
+            None,
+            dropdown(
+                pick_list(portal::CursorMode::ALL, Some(self.portal.cursor_mode), |mode| {
+                    Message::PortalCursorMode(mode)
+                }),
+                scale,
+            ),
             scale,
         ));
-
-        body = body.push(
-            row![
-                checkbox(self.portal.allow_token_by_default)
-                    .on_toggle(|v| Message::PortalToggled(Field::AllowToken, v)),
-                scaled_text("Remember my choice, so apps stop asking every time", 13.0, scale),
-            ]
-            .spacing(spacing::SM)
-            .align_y(iced::Alignment::Center),
-        );
-        body = body.push(
-            row![
-                checkbox(self.portal.force_shm)
-                    .on_toggle(|v| Message::PortalToggled(Field::ForceShm, v)),
-                scaled_text("Use the slower, more compatible capture path", 13.0, scale),
-            ]
-            .spacing(spacing::SM)
-            .align_y(iced::Alignment::Center),
-        );
-        body = body.push(meta_text(
-            "Try that one if screen sharing comes out black — it's the documented \
-             way around buffer allocation failing on machines with two GPUs.",
-            12.0,
+        rows.push(setting_row(
+            rows.len(),
+            "Remember my choice, so apps stop asking every time",
+            None,
+            toggle(self.portal.allow_token_by_default, scale)
+                .on_toggle(|v| Message::PortalToggled(Field::AllowToken, v)),
             scale,
         ));
+        rows.push(setting_row(
+            rows.len(),
+            "Use the slower, more compatible capture path",
+            Some(
+                hint_text(
+                    "Try this if screen sharing comes out black — it's the documented \
+                     way around buffer allocation failing on machines with two GPUs.",
+                    scale,
+                )
+                .into(),
+            ),
+            toggle(self.portal.force_shm, scale).on_toggle(|v| Message::PortalToggled(Field::ForceShm, v)),
+            scale,
+        ));
+        page = page.push(setting_list(rows));
 
         if self.portal_needs_restart {
-            body = body.push(divider());
-            body = body.push(scaled_text(
+            page = page.push(restart_card(
                 "Saved. The portal only reads this when it starts, so it's still \
                  using the old settings.",
-                13.0,
-                scale,
-            ));
-            // Said before they press it, not after. Restarting mid-call
-            // is exactly when someone would regret finding out.
-            body = body.push(meta_text(
+                // Said before they press it, not after. Restarting mid-call
+                // is exactly when someone would regret finding out.
                 "Restarting it will end any screen share that's running right now.",
-                12.0,
+                secondary_button("Restart the portal").on_press(Message::RestartPortal),
                 scale,
             ));
-            body = body.push(
-                secondary_button("Restart the portal").on_press(Message::RestartPortal),
-            );
         }
 
-        section("Screen sharing", scale, body)
+        page.into()
     }
 
-    /// The "show in tray" row for the night light icon, appended to the
-    /// Night light tab — this is literally that feature's own screen, so
-    /// the toggle for its tray icon belongs here rather than anywhere else.
+    /// The "show in tray" row for the night light icon, on the Night
+    /// light page — this is literally that feature's own page, so the
+    /// toggle for its tray icon belongs here rather than anywhere else.
     /// Same shape and reasoning as `network::NetworkModule::tray_row`.
     fn night_light_tray_row(&self, scale: FontScale) -> Element<'_, Message> {
         match &self.tray_prefs {
-            Ok(prefs) => row![
-                checkbox(prefs.night_light).on_toggle(Message::NightLightTrayToggled),
-                scaled_text("Show in tray", 15.0, scale),
-            ]
-            .spacing(spacing::SM)
-            .align_y(iced::Alignment::Center)
-            .into(),
-            Err(_) => meta_text(
-                "Tray setting unavailable — see the error above.",
-                13.0,
+            Ok(prefs) => setting_row(
+                0,
+                "Show in tray",
+                None,
+                toggle(prefs.night_light, scale).on_toggle(Message::NightLightTrayToggled),
                 scale,
-            )
-            .into(),
+            ),
+            Err(_) => tray_unavailable_row(scale),
         }
     }
 
-    /// The "show in tray" row for the keep-awake icon, appended to the
-    /// Idle tab: keeping the machine awake is the inverse of the timeouts
+    /// The "show in tray" row for the keep-awake icon, on the Idle & lock
+    /// page: keeping the machine awake is the inverse of the timeouts
     /// configured just below it, so it belongs beside them rather than on
-    /// a screen of its own.
+    /// a page of its own.
     fn keep_awake_tray_row(&self, scale: FontScale) -> Element<'_, Message> {
         match &self.tray_prefs {
-            Ok(prefs) => row![
-                checkbox(prefs.keep_awake).on_toggle(Message::KeepAwakeTrayToggled),
-                scaled_text("Show in tray", 15.0, scale),
-            ]
-            .spacing(spacing::SM)
-            .align_y(iced::Alignment::Center)
-            .into(),
-            Err(_) => meta_text(
-                "Tray setting unavailable — see the error above.",
-                13.0,
+            Ok(prefs) => setting_row(
+                0,
+                "Show in tray",
+                Some(
+                    hint_text(
+                        "Adds a tray icon that suspends every timeout below while \
+                         it's switched on.",
+                        scale,
+                    )
+                    .into(),
+                ),
+                toggle(prefs.keep_awake, scale).on_toggle(Message::KeepAwakeTrayToggled),
                 scale,
-            )
-            .into(),
+            ),
+            Err(_) => tray_unavailable_row(scale),
         }
     }
 
     fn sunset_view(&self, scale: FontScale) -> Element<'_, Message> {
         let problems = self.sunset.invalid();
-        let mut body = column![
-            meta_text(
+        let mut page = column![
+            group_intro(
+                "Night light",
                 "Each entry holds from its time until the next one. Lower temperatures \
                  are warmer; 6500K is neutral daylight.",
-                12.0,
                 scale,
             ),
-            self.night_light_tray_row(scale),
+            setting_list(vec![self.night_light_tray_row(scale)]),
         ]
-        .spacing(spacing::SM);
+        .spacing(spacing::MD);
 
         if self.sunset.has_midnight_gap() {
-            body = body.push(scaled_text(
+            page = page.push(hint_text(
                 "No entry starts at 00:00, so the last one of the day carries over \
                  into the morning. Add one at 00:00 if that isn't what you want.",
-                13.0,
                 scale,
-            ));
+            ).color(hyprforge_ui::theme::warning()));
         }
 
         for (i, profile) in self.sunset.profiles.iter().enumerate() {
-            body = body.push(divider());
-            let mut fields = column![].spacing(spacing::SM);
-            fields = fields.push(labelled(
-                "From",
-                text_input("21:00", &self.draft(i, Field::Time, &profile.time))
-                    .on_input(move |v| Message::ProfileChanged(i, Field::Time, v))
-                    .on_submit(Message::Commit)
-                    .padding(spacing::SM)
-                    .width(Length::Fixed(90.0))
-                    .into(),
-                scale,
-            ));
-            fields = fields.push(labelled(
-                "Temperature (K)",
-                text_input("6500", &self.draft(i, Field::Temperature, profile.temperature))
-                    .on_input(move |v| Message::ProfileChanged(i, Field::Temperature, v))
-                    .on_submit(Message::Commit)
-                    .padding(spacing::SM)
-                    .width(Length::Fixed(90.0))
-                    .into(),
-                scale,
-            ));
-            fields = fields.push(labelled(
-                "Brightness",
-                text_input("1.0", &self.draft(i, Field::Gamma, profile.gamma))
-                    .on_input(move |v| Message::ProfileChanged(i, Field::Gamma, v))
-                    .on_submit(Message::Commit)
-                    .padding(spacing::SM)
-                    .width(Length::Fixed(90.0))
-                    .into(),
-                scale,
-            ));
-            fields = fields.push(
-                row![
-                    checkbox(profile.identity)
+            let rows = vec![
+                setting_row(
+                    0,
+                    "From",
+                    None,
+                    short_field(
+                        text_input("21:00", &self.draft(i, Field::Time, &profile.time))
+                            .on_input(move |v| Message::ProfileChanged(i, Field::Time, v))
+                            .on_submit(Message::Commit),
+                        scale,
+                    ),
+                    scale,
+                ),
+                setting_row(
+                    1,
+                    "Temperature (K)",
+                    None,
+                    short_field(
+                        text_input("6500", &self.draft(i, Field::Temperature, profile.temperature))
+                            .on_input(move |v| Message::ProfileChanged(i, Field::Temperature, v))
+                            .on_submit(Message::Commit),
+                        scale,
+                    ),
+                    scale,
+                ),
+                setting_row(
+                    2,
+                    "Brightness",
+                    None,
+                    short_field(
+                        text_input("1.0", &self.draft(i, Field::Gamma, profile.gamma))
+                            .on_input(move |v| Message::ProfileChanged(i, Field::Gamma, v))
+                            .on_submit(Message::Commit),
+                        scale,
+                    ),
+                    scale,
+                ),
+                setting_row(
+                    3,
+                    "Brightness only, no colour shift",
+                    None,
+                    toggle(profile.identity, scale)
                         .on_toggle(move |v| Message::ProfileToggled(i, Field::Identity, v)),
-                    scaled_text("Brightness only, no colour shift", 13.0, scale),
-                ]
-                .spacing(spacing::SM)
-                .align_y(iced::Alignment::Center),
-            );
-            if let Some((_, problem)) = problems.iter().find(|(index, _)| *index == i) {
-                fields = fields.push(scaled_text(problem.clone(), 12.0, scale));
-            }
-            fields = fields.push(danger_button("Remove", Message::ProfileRemoved(i)));
-            body = body.push(fields);
+                    scale,
+                ),
+            ];
+            let problem = problems.iter().find(|(index, _)| *index == i).map(|(_, p)| p.clone());
+            let title = format!("From {}", if profile.time.trim().is_empty() { "…" } else { profile.time.trim() });
+            page = page.push(entry_block(title, Message::ProfileRemoved(i), rows, problem, scale));
         }
 
-        body = body.push(divider());
-        body = body.push(secondary_button("Add a time").on_press(Message::ProfileAdded));
-        section("Night light", scale, body)
+        page.push(secondary_button("Add a time").on_press(Message::ProfileAdded)).into()
     }
 
     fn idle_view<'a>(
@@ -1558,137 +1572,234 @@ impl DesktopModule {
         scale: FontScale,
     ) -> iced::widget::Column<'a, Message> {
         // Keeping the screen awake is the inverse of everything else on
-        // this tab, and doesn't depend on hypridle itself — the tray icon
+        // this page, and doesn't depend on hypridle itself — the tray icon
         // is a Hyprforge-side inhibitor, not a setting hypridle reads —
         // so it's shown first, ahead of the restart notice below.
-        content = content.push(section(
-            "Keep awake",
-            scale,
-            column![
-                meta_text(
-                    "Adds a tray icon that suspends every timeout below while \
-                     it's switched on.",
-                    12.0,
-                    scale,
-                ),
-                self.keep_awake_tray_row(scale),
-            ]
-            .spacing(spacing::SM),
-        ));
+        content = content.push(group("Keep awake", vec![self.keep_awake_tray_row(scale)], scale));
 
         // The honest bit. hypridle has no IPC, so a save here genuinely
         // does nothing until it restarts.
         if self.idle_needs_restart {
-            content = content.push(section(
-                "Restart needed",
+            content = content.push(restart_card(
+                "hypridle has no way to be told about a config change, so your \
+                 saved settings aren't running yet.",
+                "Restarting it briefly stops idle tracking — it won't lock or \
+                 dim during the moment it takes.",
+                primary_button("Restart hypridle").on_press(Message::RestartIdle),
                 scale,
-                column![
-                    scaled_text(
-                        "hypridle has no way to be told about a config change, so your \
-                         saved settings aren't running yet.",
-                        13.0,
-                        scale,
-                    ),
-                    meta_text(
-                        "Restarting it briefly stops idle tracking — it won't lock or \
-                         dim during the moment it takes.",
-                        12.0,
-                        scale,
-                    ),
-                    primary_button("Restart hypridle").on_press(Message::RestartIdle),
-                ]
-                .spacing(spacing::SM),
             ));
         }
 
         let problems = self.idle.invalid();
-        let mut listeners = column![meta_text(
+        let mut timeouts = column![group_intro(
+            "Idle timeouts",
             "Each entry waits for the screen to be idle, then runs a command. \
              Hyprforge stores these and never runs them itself.",
-            12.0,
             scale,
         )]
-        .spacing(spacing::SM);
+        .spacing(spacing::MD);
 
         for (i, listener) in self.idle.listeners.iter().enumerate() {
-            listeners = listeners.push(divider());
-            let mut fields = column![].spacing(spacing::SM);
-            fields = fields.push(labelled(
-                "After (seconds)",
-                text_input("300", &self.draft(i, Field::IdleTimeout, listener.timeout))
-                    .on_input(move |v| Message::ListenerChanged(i, Field::IdleTimeout, v))
-                    .on_submit(Message::Commit)
-                    .padding(spacing::SM)
-                    .width(Length::Fixed(90.0))
-                    .into(),
-                scale,
-            ));
-            fields = fields.push(labelled(
-                "Run",
-                text_input("loginctl lock-session", &self.draft(i, Field::OnTimeout, &listener.on_timeout))
-                    .on_input(move |v| Message::ListenerChanged(i, Field::OnTimeout, v))
-                    .on_submit(Message::Commit)
-                    .padding(spacing::SM)
-                    .into(),
-                scale,
-            ));
-            fields = fields.push(labelled(
-                "On return",
-                text_input("", &self.draft(i, Field::OnResume, &listener.on_resume))
-                    .on_input(move |v| Message::ListenerChanged(i, Field::OnResume, v))
-                    .on_submit(Message::Commit)
-                    .padding(spacing::SM)
-                    .into(),
-                scale,
-            ));
-            fields = fields.push(
-                row![
-                    checkbox(listener.ignore_inhibit)
+            let rows = vec![
+                setting_row(
+                    0,
+                    "After (seconds)",
+                    None,
+                    short_field(
+                        text_input("300", &self.draft(i, Field::IdleTimeout, listener.timeout))
+                            .on_input(move |v| Message::ListenerChanged(i, Field::IdleTimeout, v))
+                            .on_submit(Message::Commit),
+                        scale,
+                    ),
+                    scale,
+                ),
+                setting_row(
+                    1,
+                    "Run",
+                    None,
+                    field(
+                        text_input("loginctl lock-session", &self.draft(i, Field::OnTimeout, &listener.on_timeout))
+                            .on_input(move |v| Message::ListenerChanged(i, Field::OnTimeout, v))
+                            .on_submit(Message::Commit),
+                        scale,
+                    ),
+                    scale,
+                ),
+                setting_row(
+                    2,
+                    "On return",
+                    None,
+                    field(
+                        text_input("", &self.draft(i, Field::OnResume, &listener.on_resume))
+                            .on_input(move |v| Message::ListenerChanged(i, Field::OnResume, v))
+                            .on_submit(Message::Commit),
+                        scale,
+                    ),
+                    scale,
+                ),
+                setting_row(
+                    3,
+                    "Even while something is blocking idle",
+                    None,
+                    toggle(listener.ignore_inhibit, scale)
                         .on_toggle(move |v| Message::ListenerToggled(i, Field::IgnoreInhibit, v)),
-                    scaled_text("Even while something is blocking idle", 13.0, scale),
-                ]
-                .spacing(spacing::SM)
-                .align_y(iced::Alignment::Center),
-            );
-            if let Some((_, problem)) = problems.iter().find(|(index, _)| *index == i) {
-                fields = fields.push(scaled_text(problem.clone(), 12.0, scale));
-            }
-            fields = fields.push(danger_button("Remove", Message::ListenerRemoved(i)));
-            listeners = listeners.push(fields);
+                    scale,
+                ),
+            ];
+            let problem = problems.iter().find(|(index, _)| *index == i).map(|(_, p)| p.clone());
+            let title = format!("After {}s", listener.timeout);
+            timeouts = timeouts.push(entry_block(title, Message::ListenerRemoved(i), rows, problem, scale));
         }
-        listeners = listeners.push(divider());
-        listeners = listeners.push(secondary_button("Add a timeout").on_press(Message::ListenerAdded));
-        content = content.push(section("Idle timeouts", scale, listeners));
+        timeouts = timeouts.push(secondary_button("Add a timeout").on_press(Message::ListenerAdded));
+        content = content.push(timeouts);
 
-        let mut general = column![].spacing(spacing::SM);
-        for (field, label, value) in self.idle.general.commands() {
-            general = general.push(labelled(
+        let mut general: Vec<Element<'_, Message>> = Vec::new();
+        for (field_name, label, value) in self.idle.general.commands() {
+            general.push(setting_row(
+                general.len(),
                 label,
-                text_input("", value)
-                    .on_input(move |v| Message::GeneralCommandChanged(field, v))
-                    .on_submit(Message::Commit)
-                    .padding(spacing::SM)
-                    .into(),
+                None,
+                field(
+                    text_input("", value)
+                        .on_input(move |v| Message::GeneralCommandChanged(field_name, v))
+                        .on_submit(Message::Commit),
+                    scale,
+                ),
                 scale,
             ));
         }
-        for (field, label, on) in [
+        for (field_name, label, on) in [
             ("ignore_dbus_inhibit", "Ignore app idle blocks (D-Bus)", self.idle.general.ignore_dbus_inhibit),
             ("ignore_systemd_inhibit", "Ignore systemd idle blocks", self.idle.general.ignore_systemd_inhibit),
             ("ignore_wayland_inhibit", "Ignore Wayland idle blocks", self.idle.general.ignore_wayland_inhibit),
         ] {
-            general = general.push(
-                row![
-                    checkbox(on).on_toggle(move |v| Message::InhibitToggled(field, v)),
-                    scaled_text(label, 13.0, scale),
-                ]
-                .spacing(spacing::SM)
-                .align_y(iced::Alignment::Center),
-            );
+            general.push(setting_row(
+                general.len(),
+                label,
+                None,
+                toggle(on, scale).on_toggle(move |v| Message::InhibitToggled(field_name, v)),
+                scale,
+            ));
         }
-        content.push(section("Session commands", scale, general))
+        content.push(group("Session commands", general, scale))
     }
 }
+
+/// A section label over a stack of striped rows.
+fn group<'a>(label: &str, rows: Vec<Element<'a, Message>>, scale: FontScale) -> Element<'a, Message> {
+    column![section_label(label, scale), setting_list(rows)].spacing(spacing::SM).into()
+}
+
+/// A page's heading and the one line on what its entries mean.
+fn group_intro<'a>(label: &str, help: &'a str, scale: FontScale) -> Element<'a, Message> {
+    column![section_label(label, scale), hint_text(help, scale)].spacing(spacing::XS).into()
+}
+
+/// One entry of a list — a wallpaper, a night-light time, an idle timeout:
+/// its title with a quiet Remove at the right, then its fields as striped
+/// rows, and whatever the validator said about it underneath.
+///
+/// Remove is quiet because it acts on one entry of an unsaved list, which
+/// the page's own Apply still has to write; the entries used to be a
+/// column of fields ending in a red button each, divided by rules.
+fn entry_block<'a>(
+    title: String,
+    remove: Message,
+    rows: Vec<Element<'a, Message>>,
+    problem: Option<String>,
+    scale: FontScale,
+) -> Element<'a, Message> {
+    let mut block = column![
+        row![
+            scaled_text(title, 14.0, scale)
+                .font(iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT }),
+            Space::new().width(Length::Fill),
+            secondary_button("Remove").on_press(remove),
+        ]
+        .align_y(iced::Alignment::Center),
+        setting_list(rows),
+    ]
+    .spacing(spacing::SM);
+    if let Some(problem) = problem {
+        block = block.push(hint_text(problem, scale).color(hyprforge_ui::theme::warning()));
+    }
+    block.into()
+}
+
+/// "Saved, but the daemon only reads it on start" — the notice both the
+/// portal and hypridle need, with the button that restarts it.
+fn restart_card<'a>(
+    what: &'a str,
+    warning: &'a str,
+    button: iced::widget::Button<'a, Message>,
+    scale: FontScale,
+) -> Element<'a, Message> {
+    hero_card(
+        Tint::Warning,
+        row![
+            column![
+                scaled_text(what, 13.0, scale).color(hyprforge_ui::theme::text()),
+                hint_text(warning, scale),
+            ]
+            .spacing(spacing::XS)
+            .width(Length::Fill),
+            button,
+        ]
+        .spacing(spacing::MD)
+        .align_y(iced::Alignment::Center),
+    )
+    .into()
+}
+
+/// A row shown when `tray.toml` could not be read.
+fn tray_unavailable_row<'a>(scale: FontScale) -> Element<'a, Message> {
+    setting_row(
+        0,
+        "Show in tray",
+        Some(hint_text("Unavailable — see the error above.", scale).into()),
+        Space::new(),
+        scale,
+    )
+}
+
+/// A dropdown in the shared inset style, one width for every dropdown on
+/// these pages so their rows line up.
+fn dropdown<'a, T, L, V>(
+    list: iced::widget::PickList<'a, T, L, V, Message>,
+    scale: FontScale,
+) -> Element<'a, Message>
+where
+    T: ToString + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
+    V: std::borrow::Borrow<T> + 'a,
+{
+    list.style(dropdown_style)
+        .menu_style(dropdown_menu_style)
+        .width(Length::Fixed(scale.apply(CONTROL_WIDTH)))
+        .into()
+}
+
+/// A text field in the inset style, a dropdown's width — for a command
+/// or a path.
+fn field<'a>(input: iced::widget::TextInput<'a, Message>, scale: FontScale) -> Element<'a, Message> {
+    input
+        .padding(spacing::SM)
+        .style(inset_input_style)
+        .width(Length::Fixed(scale.apply(CONTROL_WIDTH)))
+        .into()
+}
+
+/// A text field for a number or a time — as narrow as what goes in it.
+fn short_field<'a>(input: iced::widget::TextInput<'a, Message>, scale: FontScale) -> Element<'a, Message> {
+    input
+        .padding(spacing::SM)
+        .style(inset_input_style)
+        .width(Length::Fixed(scale.apply(90.0)))
+        .into()
+}
+
+/// How wide these pages' dropdowns and command fields are.
+const CONTROL_WIDTH: f32 = 280.0;
 
 /// The label a `monitor =` of empty means, spelled out — an empty
 /// dropdown entry would read as "not set" rather than "all of them".

@@ -145,7 +145,7 @@ fn load() -> Task<Message> {
             .await
             .unwrap_or_default()
         },
-        Message::Loaded,
+        |scan| Message::Loaded(Box::new(scan)),
     )
 }
 
@@ -284,8 +284,10 @@ pub enum Message {
     /// Re-read the database — on entering the screen, since an
     /// application may have been installed since it was last read.
     Refresh,
-    /// The database, as just read off the UI thread.
-    Loaded(Scan),
+    /// The database, as just read off the UI thread. Boxed: a whole
+    /// `MimeDb` is several hundred bytes, and every other message here
+    /// would otherwise be carried at its size.
+    Loaded(Box<Scan>),
     /// A kind's application was chosen, by index into [`KINDS`].
     Chosen(usize, Choice),
     /// What was typed in the search box.
@@ -459,7 +461,7 @@ impl SettingsModule for DefaultAppsModule {
         match message {
             Message::Refresh => load(),
             Message::Loaded(scan) => {
-                let shown = self.adopt(scan);
+                let shown = self.adopt(*scan);
                 describe(self.db.clone(), shown)
             }
             Message::Described(found) => {

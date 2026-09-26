@@ -16,7 +16,8 @@
 use hyprforge_core::lua_setup;
 use hyprforge_ui::theme::{spacing, FontScale};
 use hyprforge_ui::widgets::{
-    danger_button, divider, meta_text, primary_button, scaled_text, secondary_button, section,
+    hint_text, meta_text, scaled_text, secondary_button, section,
+    segmented_choice, toggle,
 };
 use crate::modules::setup_notice::setup_notice;
 use crate::module::SettingsModule;
@@ -24,7 +25,7 @@ use crate::modules::setting_rows::labelled;
 use hyprforge_session::storage::Session;
 use hyprforge_session::{autostart, environment, gestures, permissions};
 use hyprforge_session::setup::{HyprConfig, SetupPlan};
-use iced::widget::{checkbox, column, container, pick_list, row, text_input};
+use iced::widget::{column, container, pick_list, row, text_input, Space};
 use iced::{Element, Length, Task};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -515,16 +516,15 @@ impl SettingsModule for SessionModule {
             content = content.push(meta_text(s.clone(), 12.0, scale));
         }
 
-        let mut tabs = row![].spacing(spacing::SM);
-        for tab in Tab::ALL {
-            let button = if tab == self.tab {
-                primary_button(tab.label())
-            } else {
-                secondary_button(tab.label())
-            };
-            tabs = tabs.push(button.on_press(Message::TabSelected(tab)));
-        }
-        content = content.push(tabs);
+        // Four lists that share one generated file, so they stay tabs of
+        // one page — as a segmented choice, the chosen one in the accent.
+        content = content.push(segmented_choice(
+            &Tab::ALL,
+            Some(&self.tab),
+            |t| t.label().to_string(),
+            Message::TabSelected,
+            scale,
+        ));
 
         content = content.push(match self.tab {
             Tab::Autostart => self.autostart_view(scale),
@@ -551,15 +551,16 @@ impl SessionModule {
         .spacing(spacing::SM);
 
         for (i, program) in self.stored.autostart.programs.iter().enumerate() {
-            body = body.push(divider());
             let whens: Vec<String> =
                 autostart::When::ALL.iter().map(|w| w.label().to_string()).collect();
-            let mut fields = column![
+            let fields = column![
+                entry_head(Tab::Autostart, i, title_or(&program.command, "New program"), program.enabled, &problems, scale),
                 labelled(
                     "Command",
                     text_input("waybar", &self.draft(i, Field::Command, &program.command))
                         .on_input(move |v| Message::Changed(i, Field::Command, v))
                         .on_submit(Message::Commit)
+                        .style(hyprforge_ui::widgets::inset_input_style)
                         .padding(spacing::SM)
                         .into(),
                     scale,
@@ -569,6 +570,7 @@ impl SessionModule {
                     text_input("why this is here", &self.draft(i, Field::Note, &program.note))
                         .on_input(move |v| Message::Changed(i, Field::Note, v))
                         .on_submit(Message::Commit)
+                        .style(hyprforge_ui::widgets::inset_input_style)
                         .padding(spacing::SM)
                         .into(),
                     scale,
@@ -583,10 +585,8 @@ impl SessionModule {
                 ),
             ]
             .spacing(spacing::SM);
-            fields = fields.push(row_actions(Tab::Autostart, i, program.enabled, &problems, scale));
             body = body.push(fields);
         }
-        body = body.push(divider());
         body = body.push(secondary_button("Add a program").on_press(Message::Added(Tab::Autostart)));
         section("Autostart", scale, body)
     }
@@ -602,13 +602,14 @@ impl SessionModule {
         .spacing(spacing::SM);
 
         for (i, variable) in self.stored.environment.variables.iter().enumerate() {
-            body = body.push(divider());
             let mut fields = column![
+                entry_head(Tab::Environment, i, title_or(&variable.name, "New variable"), variable.enabled, &problems, scale),
                 labelled(
                     "Name",
                     text_input("GTK_THEME", &self.draft(i, Field::Name, &variable.name))
                         .on_input(move |v| Message::Changed(i, Field::Name, v))
                         .on_submit(Message::Commit)
+                        .style(hyprforge_ui::widgets::inset_input_style)
                         .padding(spacing::SM)
                         .into(),
                     scale,
@@ -618,6 +619,7 @@ impl SessionModule {
                     text_input("", &self.draft(i, Field::Value, &variable.value))
                         .on_input(move |v| Message::Changed(i, Field::Value, v))
                         .on_submit(Message::Commit)
+                        .style(hyprforge_ui::widgets::inset_input_style)
                         .padding(spacing::SM)
                         .into(),
                     scale,
@@ -629,10 +631,8 @@ impl SessionModule {
             if let Some(why) = environment::danger(&variable.name) {
                 fields = fields.push(scaled_text(why, 12.0, scale));
             }
-            fields = fields.push(row_actions(Tab::Environment, i, variable.enabled, &problems, scale));
             body = body.push(fields);
         }
-        body = body.push(divider());
         body = body.push(secondary_button("Add a variable").on_press(Message::Added(Tab::Environment)));
         section("Environment", scale, body)
     }
@@ -660,17 +660,18 @@ impl SessionModule {
         }
 
         for (i, gesture) in self.stored.gestures.gestures.iter().enumerate() {
-            body = body.push(divider());
             let directions: Vec<String> =
                 gestures::DIRECTIONS.iter().map(|(d, _)| d.to_string()).collect();
             let actions: Vec<String> =
                 gestures::ACTIONS.iter().map(|(a, _, _)| a.to_string()).collect();
             let mut fields = column![
+                entry_head(Tab::Gestures, i, format!("{}-finger {}", gesture.fingers, gesture.direction), gesture.enabled, &problems, scale),
                 labelled(
                     "Fingers",
                     text_input("3", &self.draft(i, Field::Fingers, gesture.fingers))
                         .on_input(move |v| Message::Changed(i, Field::Fingers, v))
                         .on_submit(Message::Commit)
+                        .style(hyprforge_ui::widgets::inset_input_style)
                         .padding(spacing::SM)
                         .width(Length::Fixed(70.0))
                         .into(),
@@ -697,6 +698,7 @@ impl SessionModule {
                     text_input("SUPER", &self.draft(i, Field::Mods, &gesture.mods))
                         .on_input(move |v| Message::Changed(i, Field::Mods, v))
                         .on_submit(Message::Commit)
+                        .style(hyprforge_ui::widgets::inset_input_style)
                         .padding(spacing::SM)
                         .into(),
                     scale,
@@ -711,15 +713,14 @@ impl SessionModule {
                     text_input("", &self.draft(i, Field::Argument, &gesture.argument))
                         .on_input(move |v| Message::Changed(i, Field::Argument, v))
                         .on_submit(Message::Commit)
+                        .style(hyprforge_ui::widgets::inset_input_style)
                         .padding(spacing::SM)
                         .into(),
                     scale,
                 ));
             }
-            fields = fields.push(row_actions(Tab::Gestures, i, gesture.enabled, &problems, scale));
             body = body.push(fields);
         }
-        body = body.push(divider());
         body = body.push(secondary_button("Add a gesture").on_press(Message::Added(Tab::Gestures)));
         section("Gestures", scale, body)
     }
@@ -736,15 +737,16 @@ impl SessionModule {
         .spacing(spacing::SM);
 
         for (i, rule) in self.stored.permissions.rules.iter().enumerate() {
-            body = body.push(divider());
             let types: Vec<String> = permissions::TYPES.iter().map(|(t, _, _)| t.to_string()).collect();
             let modes: Vec<String> = permissions::Mode::ALL.iter().map(|m| m.to_string()).collect();
             let mut fields = column![
+                entry_head(Tab::Permissions, i, title_or(&rule.binary, "New rule"), rule.enabled, &problems, scale),
                 labelled(
                     "Program",
                     text_input("/usr/bin/grim", &self.draft(i, Field::Binary, &rule.binary))
                         .on_input(move |v| Message::Changed(i, Field::Binary, v))
                         .on_submit(Message::Commit)
+                        .style(hyprforge_ui::widgets::inset_input_style)
                         .padding(spacing::SM)
                         .into(),
                     scale,
@@ -770,38 +772,51 @@ impl SessionModule {
             if let Some((_, _, why)) = permissions::TYPES.iter().find(|(t, _, _)| *t == rule.r#type) {
                 fields = fields.push(meta_text(*why, 12.0, scale));
             }
-            fields = fields.push(row_actions(Tab::Permissions, i, rule.enabled, &problems, scale));
             body = body.push(fields);
         }
-        body = body.push(divider());
         body = body.push(secondary_button("Add a rule").on_press(Message::Added(Tab::Permissions)));
         section("Permissions", scale, body)
     }
 }
 
-/// The enable checkbox, any problem, and Remove — identical for all four
-/// lists.
-fn row_actions<'a>(
+/// The head of one entry in any of the four lists: what it is, a switch
+/// for whether it is on, and a quiet Remove — then whatever the validator
+/// said about it, in the warning colour.
+///
+/// At the top rather than the foot, so an entry reads name-first; and
+/// Remove is quiet because it only edits a list the page's Apply still
+/// has to write — it was a red button under every entry.
+fn entry_head<'a>(
     tab: Tab,
     index: usize,
+    title: String,
     enabled: bool,
     problems: &[(usize, String)],
     scale: FontScale,
 ) -> Element<'a, Message> {
-    let mut out = column![].spacing(spacing::XS);
+    let mut head = column![row![
+        scaled_text(title, 14.0, scale)
+            .font(iced::Font { weight: iced::font::Weight::Semibold, ..iced::Font::DEFAULT }),
+        Space::new().width(Length::Fill),
+        hint_text("Enabled", scale),
+        toggle(enabled, scale).on_toggle(move |v| Message::Toggled(tab, index, v)),
+        secondary_button("Remove").on_press(Message::Removed(tab, index)),
+    ]
+    .spacing(spacing::SM)
+    .align_y(iced::Alignment::Center)]
+    .spacing(spacing::XS);
     if let Some((_, problem)) = problems.iter().find(|(i, _)| *i == index) {
-        out = out.push(scaled_text(problem.clone(), 12.0, scale));
+        head = head.push(hint_text(problem.clone(), scale).color(hyprforge_ui::theme::warning()));
     }
-    out.push(
-        row![
-            checkbox(enabled).on_toggle(move |v| Message::Toggled(tab, index, v)),
-            scaled_text("Enabled", 13.0, scale),
-            danger_button("Remove", Message::Removed(tab, index)),
-        ]
-        .spacing(spacing::SM)
-        .align_y(iced::Alignment::Center),
-    )
-    .into()
+    head.into()
+}
+
+/// An entry's title, or what to call it while it is still blank.
+fn title_or(value: &str, blank: &str) -> String {
+    match value.trim() {
+        "" => blank.to_string(),
+        v => v.to_string(),
+    }
 }
 
 

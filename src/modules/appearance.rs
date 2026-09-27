@@ -1,11 +1,13 @@
-//! One screen for how the desktop looks.
+//! One module for how the desktop looks — drawn by the shell as three
+//! sidebar pages, one per tab: Appearance, Windows & workspaces and
+//! Animations.
 //!
 //! Three things a user thinks of as one decision, which the system keeps
 //! in three places: Hyprland's own appearance settings, its per-animation
 //! speeds and curves, and the GTK/icon/cursor/font settings in gsettings
 //! that no file here generates. On this machine the window borders and the
 //! GTK theme are both Dracula, matched by hand in two files with nothing
-//! keeping them in step. Putting them on one screen is the point.
+//! keeping them in step. Putting them behind one module is the point.
 //!
 //! The three don't share an ownership story, and the screen doesn't
 //! pretend they do:

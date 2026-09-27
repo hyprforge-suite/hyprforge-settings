@@ -24,7 +24,7 @@ path = "src/main.rs"
 # touches the network; standalone, cargo fetches them from git.
 #
 # This is the hub of the suite — repo-plan.md puts it last to split for
-# exactly this reason: fifteen Hyprforge crates, not one or two.
+# exactly this reason: seventeen Hyprforge crates, not one or two.
 #
 # default-features = false, features = ["dbus"]: hyprforge-core's `dbus`
 # (zbus) support is optional and only the settings app, displayctl and

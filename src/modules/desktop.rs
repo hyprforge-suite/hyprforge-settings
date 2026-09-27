@@ -1,15 +1,19 @@
-//! Wallpaper, colour temperature and idle behaviour — the Hypr ecosystem
-//! daemons.
+//! Wallpaper, colour temperature, idle behaviour and screen sharing —
+//! the Hypr ecosystem daemons.
 //!
-//! Three tabs rather than three screens: they are one family (separate
-//! daemons, hyprlang configs, joined by a `source =` line) and a user
-//! thinks of them as "how my desktop behaves when I'm not touching it".
+//! One module with four tabs, though the shell now shows each tab as a
+//! sidebar page of its own (Wallpaper, Night light, Idle & lock, Screen
+//! sharing): they are one family (separate daemons, hyprlang configs,
+//! joined by a `source =` line), so they share one draft store and one
+//! import path.
 //!
 //! The one thing this screen must not smooth over is that a change
 //! reaches each daemon differently. hyprpaper and hyprsunset take it
 //! live; **hypridle has no IPC at all** and does nothing until it
-//! restarts. Every save reports which of those happened rather than
-//! saying "Saved." at all three.
+//! restarts, and the screen-sharing portal reads its file only at
+//! startup and is restarted only when asked, because a restart drops a
+//! share in progress. Every save reports which of those happened rather
+//! than saying "Saved." at all four.
 
 use std::path::Path;
 use hyprforge_tray::Prefs as TrayPrefs;

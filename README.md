@@ -22,15 +22,15 @@ native Hyprland desktop apps.
 ## This is the hub, and it is honestly not standalone the way the rest are
 
 `hyprforge-clipboard`, `hyprforge-lock`, `hyprforge-greet` and
-`hyprforge-tray` each depend on one to five other Hyprforge crates.
-This one depends on fifteen: `hyprforge-core`, `hyprforge-ui`,
+`hyprforge-tray` each depend on two to nine other Hyprforge crates.
+This one depends on seventeen: `hyprforge-core`, `hyprforge-ui`,
 `hyprforge-windowrules`, `hyprforge-input`, `hyprforge-appearance`,
 `hyprforge-look`, `hyprforge-paths`, `hyprforge-ecosystem`,
 `hyprforge-session`, `hyprforge-system`, `hyprforge-shortcuts`,
-`hyprforge-lua-import`, `hyprforge-network`, `hyprforge-bluetooth` and
-`hyprforge-tray`. That is why `repo-plan.md` splits it last, and why a
-standalone `hyprforge-settings` repository is the least "standalone" of
-the five split so far — cloning it still pulls in most of the suite as
+`hyprforge-lua-import`, `hyprforge-network`, `hyprforge-bluetooth`,
+`hyprforge-power`, `hyprforge-tray` and `hyprforge-mime`. That is why
+`repo-plan.md` splits it last, and why a standalone `hyprforge-settings`
+repository is the least "standalone" of the eight split so far — cloning it still pulls in most of the suite as
 git dependencies. It is a real settings app you can build and test on
 its own; it is not a small one.
 
@@ -58,7 +58,7 @@ helper that repoints
 `$XDG_CONFIG_HOME` at a throwaway `tempfile::tempdir()` before touching
 the module under test — `with_temp_config` in `modules/appearance.rs`,
 `modules/input.rs`, `modules/session.rs`, `modules/desktop.rs`,
-`modules/network.rs` and `modules/bluetooth.rs`, `with_isolated_module`
+`modules/network.rs`, `modules/bluetooth.rs` and `modules/tray.rs`, `with_isolated_module`
 in `modules/window_rules.rs`, and a guard type in
 `modules/shortcuts.rs` — and every one of them holds the same
 `modules::CONFIG_ENV_LOCK` while it does — a per-module lock would not be

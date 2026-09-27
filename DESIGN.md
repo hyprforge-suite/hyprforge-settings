@@ -38,7 +38,7 @@ Every sizing is a ratio of the Theme at 100% scale (`hyprforge-ui`'s
 - **Shared widgets** (`hyprforge-ui/src/widgets/`): switch, value and stepped
   sliders, segmented choice, inset field and dropdown styles, chips, keycaps,
   config lines, striped setting rows, page header, hero card, pending bar,
-  countdown ring; drawn page, signal and battery marks (`glyph.rs`).
+  countdown ring; drawn page, signal and battery marks (`crates/hyprforge-ui/src/glyph.rs`).
 - **The shell** (`src/main.rs`): header bar with the search field and a
   live/pending chip, the sidebar in the mockup's four groups (System,
   Connectivity, Hyprland, Personal), page headers drawn by the shell, one
@@ -47,8 +47,8 @@ Every sizing is a ratio of the Theme at 100% scale (`hyprforge-ui`'s
 - **Pages**: the catalogue pages as striped rows with each setting's config
   line; Displays' arrangement canvas and rows; the keep/revert countdown;
   Keybinds as a table and its editor; Windows & workspaces' Writes block;
-  Network, Power & battery, Bluetooth, Tray and Window rules as hero cards and
-  striped groups; Idle & lock, Wallpaper, Night light, Screen sharing and
+  Network, Power & battery and Bluetooth as hero cards and striped groups,
+  Tray and Window rules as striped groups; Idle & lock, Wallpaper, Night light, Screen sharing and
   Session with their lists as entry blocks (a title, a switch where the entry
   can be off, a quiet Remove, its fields as striped rows); Default apps,
   Appearance and Animations as striped rows. Every on/off is a switch. The

@@ -30,26 +30,26 @@ path = "src/main.rs"
 # (zbus) support is optional and only the settings app, displayctl and
 # the tray want it — see the root workspace table's own comment on this
 # crate.
-hyprforge-core = { git = "https://github.com/hyprforge-suite/hyprforge", default-features = false, features = ["dbus"] }
-hyprforge-ui = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-windowrules = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-input = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-appearance = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-look = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-paths = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-ecosystem = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-session = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-system = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-shortcuts = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-lua-import = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-network = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-bluetooth = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-power = { git = "https://github.com/hyprforge-suite/hyprforge" }
-hyprforge-tray = { git = "https://github.com/hyprforge-suite/hyprforge" }
+hyprforge-core = { version = "0.1", default-features = false, features = ["dbus"] }
+hyprforge-ui = "0.1"
+hyprforge-windowrules = "0.1"
+hyprforge-input = "0.1"
+hyprforge-appearance = "0.1"
+hyprforge-look = "0.1"
+hyprforge-paths = "0.1"
+hyprforge-ecosystem = "0.1"
+hyprforge-session = "0.1"
+hyprforge-system = "0.1"
+hyprforge-shortcuts = "0.1"
+hyprforge-lua-import = "0.1"
+hyprforge-network = "0.1"
+hyprforge-bluetooth = "0.1"
+hyprforge-power = "0.1"
+hyprforge-tray = "0.1"
 # What opens what: the freedesktop mime database, read and (for the
 # user's own defaults) written. Same git spelling as every sibling
 # above — see the comment at the top of this section.
-hyprforge-mime = { git = "https://github.com/hyprforge-suite/hyprforge" }
+hyprforge-mime = "0.1"
 # iced_graphics enables the `image` crate with no format features at all,
 # so without this there is no PNG decoder and every wallpaper fails to
 # load. Cargo unifies features across the dependency graph, so declaring
@@ -136,16 +136,16 @@ thiserror = "2"
 tempfile = "3"
 # "mock" for `hyprforge_network::backend::mock::MockBackend`, which the
 # Network screen's tests drive instead of a real D-Bus connection.
-hyprforge-network = { git = "https://github.com/hyprforge-suite/hyprforge", features = ["mock"] }
+hyprforge-network = { version = "0.1", features = ["mock"] }
 # "mock" for `hyprforge_bluetooth::backend::mock::MockBackend`, which the
 # Bluetooth screen's tests drive instead of a real D-Bus connection.
-hyprforge-bluetooth = { git = "https://github.com/hyprforge-suite/hyprforge", features = ["mock"] }
+hyprforge-bluetooth = { version = "0.1", features = ["mock"] }
 # "mock" for `hyprforge_power::backend::mock`'s three mock backends, which
 # the Power screen's tests drive instead of real D-Bus connections — and,
 # for the power-profiles-daemon mock in particular, instead of ever
 # touching the real one (see CLAUDE.md: never change the active profile
 # of the machine this suite is developed on).
-hyprforge-power = { git = "https://github.com/hyprforge-suite/hyprforge", features = ["mock"] }
+hyprforge-power = { version = "0.1", features = ["mock"] }
 # `test-util` for `#[tokio::test(start_paused = true)]`: the displayd call
 # bounds are 5s and 25s, and a test suite must not spend half a minute
 # actually waiting them out to prove they fire.

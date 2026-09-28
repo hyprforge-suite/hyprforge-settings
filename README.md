@@ -30,8 +30,8 @@ This one depends on seventeen: `hyprforge-core`, `hyprforge-ui`,
 `hyprforge-lua-import`, `hyprforge-network`, `hyprforge-bluetooth`,
 `hyprforge-power`, `hyprforge-tray` and `hyprforge-mime`. That is why
 `repo-plan.md` splits it last, and why a standalone `hyprforge-settings`
-repository is the least "standalone" of the nine split so far — cloning it still pulls in most of the suite as
-git dependencies. It is a real settings app you can build and test on
+repository is the least "standalone" of the nine split so far — building it fetches most of the suite's
+libraries from crates.io. It is a real settings app you can build and test on
 its own; it is not a small one.
 
 ## Building
@@ -40,9 +40,8 @@ its own; it is not a small one.
 cargo build --release -p hyprforge-settings
 ```
 
-Its Hyprforge dependencies are taken as git dependencies on the main
-repository rather than from crates.io, which is where they will move
-once they are published. Nothing else here is Hyprforge-specific.
+Its Hyprforge dependencies are published on crates.io, so cargo fetches them from there and never needs
+the main repository. Nothing else here is Hyprforge-specific.
 
 ## It writes real configuration — read this before running it
 

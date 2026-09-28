@@ -30,7 +30,7 @@ This one depends on seventeen: `hyprforge-core`, `hyprforge-ui`,
 `hyprforge-lua-import`, `hyprforge-network`, `hyprforge-bluetooth`,
 `hyprforge-power`, `hyprforge-tray` and `hyprforge-mime`. That is why
 `repo-plan.md` splits it last, and why a standalone `hyprforge-settings`
-repository is the least "standalone" of the eight split so far — cloning it still pulls in most of the suite as
+repository is the least "standalone" of the nine split so far — cloning it still pulls in most of the suite as
 git dependencies. It is a real settings app you can build and test on
 its own; it is not a small one.
 

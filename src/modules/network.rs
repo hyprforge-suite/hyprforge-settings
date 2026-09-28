@@ -5,8 +5,8 @@
 //! already — this module is the screen on top of it, and nothing more.
 //! It is generic over [`NetworkBackend`] for the same reason
 //! `hyprforge-network` itself is split into a trait and a real
-//! implementation: the tests below drive a [`MockBackend`], and
-//! `main.rs` drives [`NetworkManagerBackend`], and the screen's logic —
+//! implementation: the tests below drive a `MockBackend` (behind the `mock` feature), and
+//! `main.rs` drives [`NetworkManagerBackend`](hyprforge_network::NetworkManagerBackend), and the screen's logic —
 //! which row is clickable, what a wrong password does to the state — is
 //! identical either way.
 //!

@@ -59,7 +59,7 @@ pub struct TrayModule {
     /// `tray.toml` on every pixel of movement — only
     /// [`Message::OffsetReleased`] commits it to disk. Outside of a drag
     /// this is kept equal to `tray_prefs`'s own value (see
-    /// [`Message::Loaded`] and every toggle arm, none of which touch
+    /// [`Message::Refresh`] and every toggle arm, none of which touch
     /// this field).
     offset_draft: i32,
     /// Anything that went wrong on the last load or the last save.

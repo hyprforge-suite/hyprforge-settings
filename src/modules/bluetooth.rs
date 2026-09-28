@@ -3,7 +3,7 @@
 //! Same shape as `modules::network`: everything that talks to BlueZ lives
 //! in `hyprforge-bluetooth` already, this module is the screen on top of
 //! it, and it is generic over [`BluetoothBackend`] so the tests below can
-//! drive a [`MockBackend`] while `main.rs` drives the real one.
+//! drive a `MockBackend` (behind the `mock` feature) while `main.rs` drives the real one.
 
 use hyprforge_bluetooth::backend::{for_display, BluetoothBackend};
 use hyprforge_bluetooth::{Address, AdapterState, BluetoothError, Device, PairingPrompt, Passkey, Status};

@@ -16,7 +16,7 @@ Appearance's and Desktop's tabs are pages of their own — and the shell,
 not the module, draws every page's title, sidebar entry and
 pending-changes bar.
 
-Part of [Hyprforge](https://github.com/adamrpostjr/hyprforge), a suite of
+Part of [Hyprforge](https://github.com/hyprforge-suite/hyprforge), a suite of
 native Hyprland desktop apps.
 
 ## This is the hub, and it is honestly not standalone the way the rest are

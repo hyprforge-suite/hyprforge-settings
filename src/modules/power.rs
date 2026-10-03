@@ -112,7 +112,12 @@ pub struct Loaded {
 async fn load_inhibit<I: InhibitBackend + ?Sized>(backend: &I) -> Result<InhibitLoaded, LoadError> {
     let held = backend.held().await?;
     let all = backend.list_inhibitors().await?;
-    let others = all.into_iter().filter(|i| i.who != KEEP_AWAKE_WHO).collect();
+    // Neither this screen's own lock nor keep awake's holder is "someone
+    // else": the holder is what this toggle starts, wherever it runs.
+    let others = all
+        .into_iter()
+        .filter(|i| i.who != KEEP_AWAKE_WHO && i.who != hyprforge_power::keep_awake::HOLDER_WHO)
+        .collect();
     Ok(InhibitLoaded { held, others })
 }
 
@@ -600,70 +605,19 @@ fn battery_state_label(state: BatteryState) -> &'static str {
     }
 }
 
-/// The real `InhibitBackend`, connected lazily.
+/// The real `BatteryBackend`, connected lazily.
 ///
-/// `LogindBackend::connect()` is async and fallible, but `App::new` — like
+/// `UPowerBackend::connect()` is async and fallible, but `App::new` — like
 /// every module's — builds its screens synchronously and hands back a
 /// `Task` for anything that has to wait. Wrapping the connection behind
-/// `InhibitBackend` itself means `PowerModule` never needs an `Option` for
-/// "not connected yet": connecting is just what the first call does.
+/// the trait itself means `PowerModule` never needs an `Option` for "not
+/// connected yet": connecting is just what the first call does.
 ///
 /// Only a *successful* connection is cached — the same rule
 /// `network::LazyNetworkManagerBackend` and `bluetooth::LazyBlueZBackend`
-/// keep, and for the same reason: caching a *failed* connect would mean
-/// `InhibitError::Unavailable` keeps being shown after `systemd-logind`
-/// comes back, because nothing would ever retry the connection that
-/// failed once.
-pub struct LazyLogindBackend {
-    inner: tokio::sync::Mutex<Option<Arc<hyprforge_power::LogindBackend>>>,
-}
-
-impl LazyLogindBackend {
-    pub fn new() -> Self {
-        LazyLogindBackend { inner: tokio::sync::Mutex::new(None) }
-    }
-
-    /// The lock is held across the connect so that a burst of calls — a
-    /// refresh tick fires `held` and `list_inhibitors` together — opens
-    /// one bus connection rather than two.
-    async fn get(&self) -> Result<Arc<hyprforge_power::LogindBackend>, InhibitError> {
-        let mut slot = self.inner.lock().await;
-        if let Some(backend) = slot.as_ref() {
-            return Ok(backend.clone());
-        }
-        let backend = Arc::new(hyprforge_power::LogindBackend::connect().await?);
-        *slot = Some(backend.clone());
-        Ok(backend)
-    }
-}
-
-impl Default for LazyLogindBackend {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait::async_trait]
-impl InhibitBackend for LazyLogindBackend {
-    async fn take(&self, what: WhatSet, who: &str, why: &str) -> Result<(), InhibitError> {
-        self.get().await?.take(what, who, why).await
-    }
-
-    async fn release(&self) -> Result<(), InhibitError> {
-        self.get().await?.release().await
-    }
-
-    async fn held(&self) -> Result<Option<WhatSet>, InhibitError> {
-        self.get().await?.held().await
-    }
-
-    async fn list_inhibitors(&self) -> Result<Vec<InhibitorInfo>, InhibitError> {
-        self.get().await?.list_inhibitors().await
-    }
-}
-
-/// The real `BatteryBackend`, connected lazily. Same shape as
-/// [`LazyLogindBackend`] and for the same reason — see its doc comment.
+/// keep, and for the same reason: caching a *failed* connect would keep
+/// showing the service as unavailable after it comes back. Keep awake's
+/// backend, `hyprforge_power::DetachedBackend`, connects the same way.
 pub struct LazyUPowerBackend {
     inner: tokio::sync::Mutex<Option<Arc<hyprforge_power::UPowerBackend>>>,
 }
@@ -698,7 +652,7 @@ impl BatteryBackend for LazyUPowerBackend {
 }
 
 /// The real `PowerProfilesBackend`, connected lazily. Same shape as
-/// [`LazyLogindBackend`] and for the same reason — see its doc comment.
+/// [`LazyUPowerBackend`] and for the same reason — see its doc comment.
 pub struct LazyPowerProfilesDaemonBackend {
     inner: tokio::sync::Mutex<Option<Arc<hyprforge_power::PowerProfilesDaemonBackend>>>,
 }

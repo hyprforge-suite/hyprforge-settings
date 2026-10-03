@@ -24,7 +24,7 @@ use modules::displays::DisplaysModule;
 use modules::input::InputModule;
 use modules::network::{LazyNetworkManagerBackend, NetworkModule};
 use modules::power::{
-    LazyLogindBackend, LazyPowerProfilesDaemonBackend, LazyUPowerBackend, PowerModule,
+    LazyPowerProfilesDaemonBackend, LazyUPowerBackend, PowerModule,
 };
 use modules::shortcuts::ShortcutsModule;
 use modules::default_apps::DefaultAppsModule;
@@ -181,6 +181,21 @@ static INITIAL_SCREEN: std::sync::OnceLock<Screen> = std::sync::OnceLock::new();
 static INITIAL_SEARCH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 fn main() -> iced::Result {
+    // Keep awake's holder: this binary run only to hold the inhibit, so
+    // it outlives the window that turned it on — see
+    // `hyprforge_power::keep_awake`. First, before the single-instance
+    // lock, which would otherwise hand the holder off to a running
+    // Settings window and exit.
+    if std::env::args().nth(1).as_deref() == Some(hyprforge_power::keep_awake::HOLDER_ARG) {
+        let held = tokio::runtime::Runtime::new()
+            .map_err(|e| e.to_string())
+            .and_then(|rt| rt.block_on(hyprforge_power::keep_awake::hold()).map_err(|e| e.to_string()));
+        if let Err(e) = held {
+            eprintln!("hyprforge-settings: keep awake could not take hold: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     // `from_default_env()` alone defaults to ERROR, and these crates emit
     // no `error!` at all — so with RUST_LOG unset, which is how a GUI
     // launched from a menu always runs, every `warn!` in the app went
@@ -702,7 +717,7 @@ struct App {
     input: InputModule,
     network: NetworkModule<LazyNetworkManagerBackend>,
     bluetooth: BluetoothModule<LazyBlueZBackend>,
-    power: PowerModule<LazyLogindBackend, LazyUPowerBackend, LazyPowerProfilesDaemonBackend>,
+    power: PowerModule<hyprforge_power::DetachedBackend, LazyUPowerBackend, LazyPowerProfilesDaemonBackend>,
     tray: TrayModule,
     appearance: AppearanceModule,
     desktop: DesktopModule,
@@ -728,7 +743,11 @@ impl App {
         let (bluetooth, bluetooth_task) =
             BluetoothModule::new(std::sync::Arc::new(LazyBlueZBackend::new()));
         let (power, power_task) = PowerModule::new(
-            std::sync::Arc::new(LazyLogindBackend::new()),
+            // Keep awake is held by a process of its own, so closing this
+            // window no longer turns it off — `hyprforge_power::keep_awake`.
+            std::sync::Arc::new(hyprforge_power::DetachedBackend::this_binary().unwrap_or_else(|_| {
+                hyprforge_power::DetachedBackend::new("hyprforge-settings".into())
+            })),
             std::sync::Arc::new(LazyUPowerBackend::new()),
             std::sync::Arc::new(LazyPowerProfilesDaemonBackend::new()),
         );

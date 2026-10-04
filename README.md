@@ -80,6 +80,26 @@ that it could not. `/run/user/$UID/<name>` fits.
 `--screen <name>` opens a given page and `--search <text>` opens with the
 palette showing, which is how a page is reached for a screenshot.
 
+`--setup` finishes an install without opening a window: the services,
+keybinds, idle lock, notification blur, default apps and open/save
+dialog the installer used to print as instructions, each checked and
+applied through `hyprforge-setup` and recorded in
+`~/.config/hyprforge/setup.toml` so it can be undone.
+
+```
+hyprforge-settings --setup              ask about each item that is to do
+hyprforge-settings --setup --yes        apply every item that is on by default
+hyprforge-settings --setup --list       each item's state
+hyprforge-settings --setup --porcelain  one id<TAB>state<TAB>reason line per item
+hyprforge-settings --setup --undo [id]  undo what setup recorded
+```
+
+It writes real config, so test it against a scratch `XDG_CONFIG_HOME`
+like everything else here. The modes that write hand off to a Settings
+window that is already open, rather than write beside it; `--list` and
+`--porcelain` only read and always answer. Exit status is 0, 1 when an
+item failed, 2 for a usage error.
+
 Displays only draws its arrangement canvas with two or more monitors. To
 see it on a one-monitor machine, run `hyprforge-displayd run --mock` and
 this app together on a private session bus, and give the mock monitors

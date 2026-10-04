@@ -614,6 +614,12 @@ pub struct WindowRulesModule {
     /// `storage::Rules` so the list operations below can keep indexing one
     /// flat Vec; the two are recombined on save.
     workspace_rules: Vec<WorkspaceRule>,
+    /// Layer rules (blur behind notifications), written by Setup and not
+    /// editable on this page yet. Held only so that a save from here
+    /// writes them back: `storage::save` writes the whole file, and a
+    /// module that forgot them would delete what Setup added the first
+    /// time anyone touched a window rule.
+    layer_rules: Vec<hyprforge_windowrules::LayerRule>,
     draft: Option<RuleDraft>,
     /// Which Hyprland config the user has. `None` of the non-`Lua` variants
     /// can be served by inserting a require line, so this gates the whole
@@ -717,7 +723,8 @@ impl WindowRulesModule {
             Ok(stored) => (stored, None),
             Err(e) => (Default::default(), Some(e.to_string())),
         };
-        let (rules, workspace_rules) = (stored.rules, stored.workspace_rules);
+        let (rules, workspace_rules, layer_rules) =
+            (stored.rules, stored.workspace_rules, stored.layer_rules);
         let setup = lua_setup::bootstrap(
             &hyprforge_core::paths::hypr_config_dir(),
             &hyprforge_core::paths::hyprland_lua_path(),
@@ -735,6 +742,7 @@ impl WindowRulesModule {
             WindowRulesModule {
                 rules,
                 workspace_rules,
+                layer_rules,
                 draft: None,
                 config,
                 setup_plan,
@@ -775,6 +783,7 @@ impl WindowRulesModule {
         hyprforge_windowrules::storage::Rules {
             rules: self.rules.clone(),
             workspace_rules: self.workspace_rules.clone(),
+            layer_rules: self.layer_rules.clone(),
         }
     }
 
@@ -2552,6 +2561,38 @@ mod tests {
         let stored = MonitorChoice::from_stored("desc:GWD ARZOPA");
         assert_eq!(stored.selector, "desc:GWD ARZOPA");
         assert!(stored.to_string().contains("not connected"));
+    }
+
+    /// Setup writes the notification blur as layer rules into the same
+    /// `window-rules.toml` this page saves whole. A page that dropped
+    /// what it does not edit would delete them on its first save.
+    #[test]
+    fn a_save_from_this_page_keeps_the_layer_rules_setup_added() {
+        crate::modules::with_temp_env(|_| {
+            let path = hyprforge_core::paths::window_rules_toml_path();
+            let blur = hyprforge_windowrules::LayerRule {
+                name: "hyprforge-notif-blur".into(),
+                enabled: true,
+                namespace: "^notif$".into(),
+                blur: Some(true),
+            };
+            hyprforge_windowrules::storage::save(
+                &path,
+                &hyprforge_windowrules::storage::Rules {
+                    layer_rules: vec![blur.clone()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+            let mut m = WindowRulesModule::new().0;
+            let _ = m.update(Message::AddWorkspacePin);
+            let _ = m.update(Message::PinWorkspace(0, "name:gaming".into()));
+
+            let saved = hyprforge_windowrules::storage::load(&path).unwrap();
+            assert_eq!(saved.workspace_rules.len(), 1, "the pin was saved");
+            assert_eq!(saved.layer_rules, vec![blur], "and the layer rule survived it");
+        });
     }
 
     #[test]

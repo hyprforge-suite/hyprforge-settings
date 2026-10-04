@@ -3,6 +3,7 @@ mod look;
 mod module;
 mod modules;
 mod search;
+mod setup_cli;
 mod singleton;
 
 use hyprforge_ui::density;
@@ -195,6 +196,35 @@ fn main() -> iced::Result {
             std::process::exit(1);
         }
         return Ok(());
+    }
+    // `--setup`: the Set up page without a window, for a terminal and for
+    // the installer — see `setup_cli`. Before the theme and the window,
+    // neither of which it needs, and before the singleton handoff below,
+    // which it makes for itself and only for the modes that write.
+    if std::env::args().nth(1).as_deref() == Some("--setup") {
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        let mode = match setup_cli::parse(&rest) {
+            Ok(mode) => mode,
+            Err(message) => {
+                eprintln!("hyprforge-settings: {message}");
+                eprintln!("{}", setup_cli::USAGE);
+                std::process::exit(2);
+            }
+        };
+        let stdin = std::io::stdin();
+        let status = setup_cli::run(
+            &mode,
+            &hyprforge_setup::Env::from_environment(),
+            &hyprforge_setup::RealSystem,
+            &singleton::lock_path(),
+            &|| ipc::request_show_screen("setup").map_err(|e| e.to_string()),
+            setup_cli::Io {
+                input: &mut stdin.lock(),
+                out: &mut std::io::stdout(),
+                err: &mut std::io::stderr(),
+            },
+        );
+        std::process::exit(status);
     }
     // `from_default_env()` alone defaults to ERROR, and these crates emit
     // no `error!` at all — so with RUST_LOG unset, which is how a GUI

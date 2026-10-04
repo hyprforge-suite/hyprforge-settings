@@ -48,6 +48,10 @@ hyprforge-tray = "0.1"
 # user's own defaults) written. Same git spelling as every sibling
 # above — see the comment at the top of this section.
 hyprforge-mime = "0.1"
+# What `--setup` (and the Set up page) check, apply and undo: services,
+# keybinds, the idle lock, notification blur, default apps, the portal
+# dialog. The steps the installer used to print.
+hyprforge-setup = "0.1"
 # iced_graphics enables the `image` crate with no format features at all,
 # so without this there is no PNG decoder and every wallpaper fails to
 # load. Cargo unifies features across the dependency graph, so declaring
@@ -144,6 +148,10 @@ hyprforge-bluetooth = { version = "0.1", features = ["mock"] }
 # touching the real one (see CLAUDE.md: never change the active profile
 # of the machine this suite is developed on).
 hyprforge-power = { version = "0.1", features = ["mock"] }
+# "mock" for `hyprforge_setup::mock::MockSystem`, which `--setup`'s tests
+# drive instead of systemctl, hyprctl and the session bus — so no test can
+# enable a real service or reload the real compositor.
+hyprforge-setup = { version = "0.1", features = ["mock"] }
 # `test-util` for `#[tokio::test(start_paused = true)]`: the displayd call
 # bounds are 5s and 25s, and a test suite must not spend half a minute
 # actually waiting them out to prove they fire.

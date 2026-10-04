@@ -1921,8 +1921,10 @@ fn sunset_toml() -> PathBuf {
     hyprforge_core::paths::hyprforge_config_dir().join("night-light.toml")
 }
 
+/// Shared with Setup's "lock when idle" — see
+/// `hyprforge_ecosystem::idle::settings_path`.
 fn idle_toml() -> PathBuf {
-    hyprforge_core::paths::hyprforge_config_dir().join("idle.toml")
+    hyprforge_ecosystem::idle::settings_path()
 }
 
 fn portal_toml() -> PathBuf {

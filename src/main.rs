@@ -29,6 +29,7 @@ use modules::power::{
 };
 use modules::shortcuts::ShortcutsModule;
 use modules::default_apps::DefaultAppsModule;
+use modules::setup::SetupModule;
 use modules::tray::TrayModule;
 use modules::window_rules::WindowRulesModule;
 
@@ -41,7 +42,7 @@ use modules::window_rules::WindowRulesModule;
 /// It is also what makes a screen reviewable. Proving a page *looks*
 /// right means opening it and taking a picture, and without this there
 /// is no way to reach one from outside the app — Ctrl+1..3 cover three
-/// of the eighteen pages, and injecting a click needs tooling that is not
+/// of the nineteen pages, and injecting a click needs tooling that is not
 /// on every machine. A screenshot is how the `web-colors` bug was found;
 /// this is what makes taking one repeatable.
 fn screen_from_cli(name: &str) -> Option<Screen> {
@@ -68,6 +69,9 @@ fn screen_from_cli(name: &str) -> Option<Screen> {
         "night-light" | "nightlight" => Screen::NightLight,
         "screen-sharing" | "screensharing" => Screen::Sharing,
         "tray" => Screen::Tray,
+        // What `--setup` hands a running window when it finds one open,
+        // so the wording matches the flag rather than the page title.
+        "setup" | "set-up" | "get-started" => Screen::Setup,
         _ => return None,
     };
     Some(screen)
@@ -86,6 +90,7 @@ pub(crate) fn screen_name_is_known(name: &str) -> bool {
 /// aliases are deliberately left out: one canonical name per screen is
 /// what a help text is for.
 const SCREEN_NAMES: &[&str] = &[
+    "setup",
     "displays",
     "power",
     "keyboard-mouse",
@@ -351,6 +356,14 @@ fn main() -> iced::Result {
         .run()
 }
 
+/// Whether the first Set up check may still choose the opening page:
+/// only when `--screen` did not. A deep link is somebody asking for a
+/// page — the tray's network icon, a notification — and opening Set up
+/// over it would answer a question nobody asked.
+fn first_launch_waits(initial: Option<Screen>) -> bool {
+    initial.is_none()
+}
+
 /// Settings for the main window, opened on boot.
 fn main_window_settings() -> window::Settings {
     window::Settings {
@@ -537,6 +550,7 @@ enum Screen {
     NightLight,
     Sharing,
     Tray,
+    Setup,
 }
 
 impl Screen {
@@ -563,6 +577,7 @@ impl Screen {
             Screen::NightLight => "Night light",
             Screen::Sharing => "Screen sharing",
             Screen::Tray => "Tray",
+            Screen::Setup => "Set up",
         }
     }
 
@@ -588,6 +603,7 @@ impl Screen {
             Screen::NightLight => Page::NightLight,
             Screen::Sharing => Page::ScreenSharing,
             Screen::Tray => Page::Tray,
+            Screen::Setup => Page::Setup,
         }
     }
 
@@ -605,6 +621,7 @@ impl Screen {
             Screen::Session => Host::Session,
             Screen::System => Host::System,
             Screen::Tray => Host::Tray,
+            Screen::Setup => Host::Setup,
             Screen::Appearance | Screen::WindowsWorkspaces | Screen::Animations => Host::Appearance,
             Screen::Wallpaper | Screen::NightLight | Screen::Idle | Screen::Sharing => {
                 Host::Desktop
@@ -655,6 +672,7 @@ enum Host {
     DefaultApps,
     Session,
     System,
+    Setup,
 }
 
 /// A group of pages in the sidebar — the mockup's four.
@@ -672,6 +690,10 @@ struct NavCategory {
 /// entry that opened onto nothing would be a promise the app does not
 /// keep.
 const NAV: &[NavCategory] = &[
+    // First, above the machine: it is where a fresh install starts, and
+    // its count beside it says whether anything is still left — which is
+    // the way back here for whoever dismissed it on first launch.
+    NavCategory { label: "Get started", screens: &[Screen::Setup] },
     NavCategory {
         label: "System",
         screens: &[Screen::Monitors, Screen::Power, Screen::Input, Screen::DefaultApps],
@@ -729,6 +751,7 @@ enum Message {
     DefaultApps(modules::default_apps::Message),
     Session(modules::session::Message),
     System(modules::catalog_screen::Message),
+    Setup(modules::setup::Message),
     WindowOpened(window::Id),
     WindowClosed(window::Id),
     RevertPopupOpened(window::Id),
@@ -754,6 +777,15 @@ struct App {
     default_apps: DefaultAppsModule,
     session: SessionModule,
     system: SystemModule,
+    setup: SetupModule,
+    /// True until the first Set up check has had its say over which page
+    /// the window shows — see [`modules::setup::should_open_on_setup`].
+    /// False from the start when `--screen` named a page, and cleared the
+    /// moment anyone goes anywhere, so a late check never moves a window
+    /// somebody is already using.
+    first_launch_waiting: bool,
+    /// When the app started, for [`modules::setup::FIRST_LAUNCH_GRACE`].
+    started: std::time::Instant,
     search_query: String,
     search_id: Id,
     font_scale: FontScale,
@@ -795,6 +827,10 @@ impl App {
         let (default_apps, default_apps_task) = DefaultAppsModule::new();
         let (session, session_task) = SessionModule::new();
         let (system, system_task) = SystemModule::new();
+        // The first check runs on the blocking pool and the window opens
+        // without it; `Message::Setup` decides on arrival whether it
+        // still may move the window here.
+        let (setup, setup_task) = SetupModule::new();
         (
             App {
                 screen,
@@ -811,6 +847,9 @@ impl App {
                 default_apps,
                 session,
                 system,
+                setup,
+                first_launch_waiting: first_launch_waits(INITIAL_SCREEN.get().copied()),
+                started: std::time::Instant::now(),
                 search_query: INITIAL_SEARCH.get().cloned().unwrap_or_default(),
                 search_id: Id::unique(),
                 font_scale: FontScale(hyprforge_ui::theme::active().font_scale),
@@ -832,6 +871,7 @@ impl App {
                 default_apps_task.map(Message::DefaultApps),
                 session_task.map(Message::Session),
                 system_task.map(Message::System),
+                setup_task.map(Message::Setup),
             ]),
         )
     }
@@ -882,6 +922,7 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Navigate(screen) => {
+                self.first_launch_waiting = false;
                 self.screen = screen;
                 self.open_tabs();
                 // Going somewhere closes the palette, whether it was the
@@ -894,6 +935,7 @@ impl App {
                 None => Task::none(),
             },
             Message::Reveal(screen, messages) => {
+                self.first_launch_waiting = false;
                 self.screen = screen;
                 self.open_tabs();
                 self.search_query.clear();
@@ -978,6 +1020,9 @@ impl App {
                 Host::Desktop => Task::none(),
                 Host::Session => Task::none(),
                 Host::System => Task::none(),
+                Host::Setup => {
+                    self.setup.update(modules::setup::Message::Check).map(Message::Setup)
+                }
             },
             Message::Displays(msg) => {
                 let task = self.displays.update(msg).map(Message::Displays);
@@ -995,6 +1040,7 @@ impl App {
             Message::Desktop(msg) => self.desktop.update(msg).map(Message::Desktop),
             Message::Session(msg) => self.session.update(msg).map(Message::Session),
             Message::System(msg) => self.system.update(msg).map(Message::System),
+            Message::Setup(msg) => self.setup_message(msg),
             Message::WindowOpened(id) => {
                 if self.main_window.is_none() {
                     self.main_window = Some(id);
@@ -1029,6 +1075,7 @@ impl App {
                     // falls through to "focus only" rather than panicking
                     // or navigating nowhere.
                     if let Some(screen) = screen_from_cli(&name) {
+                        self.first_launch_waiting = false;
                         self.screen = screen;
                         self.open_tabs();
                     }
@@ -1114,6 +1161,7 @@ impl App {
             Host::Desktop => self.desktop.subtitle(),
             Host::Session => self.session.subtitle(),
             Host::System => self.system.subtitle(),
+            Host::Setup => self.setup.subtitle(),
         }
     }
 
@@ -1133,6 +1181,7 @@ impl App {
             Host::Desktop => self.desktop.nav_badge(),
             Host::Session => self.session.nav_badge(),
             Host::System => self.system.nav_badge(),
+            Host::Setup => self.setup.nav_badge(),
         }
     }
 
@@ -1156,6 +1205,7 @@ impl App {
             Host::Desktop => self.desktop.header_actions(scale).map(|e| e.map(Message::Desktop)),
             Host::Session => self.session.header_actions(scale).map(|e| e.map(Message::Session)),
             Host::System => self.system.header_actions(scale).map(|e| e.map(Message::System)),
+            Host::Setup => self.setup.header_actions(scale).map(|e| e.map(Message::Setup)),
         }
     }
 
@@ -1175,7 +1225,51 @@ impl App {
             Host::Desktop => self.desktop.pending().map(|p| p.map(Message::Desktop)),
             Host::Session => self.session.pending().map(|p| p.map(Message::Session)),
             Host::System => self.system.pending().map(|p| p.map(Message::System)),
+            Host::Setup => self.setup.pending().map(|p| p.map(Message::Setup)),
         }
+    }
+
+    /// A Set up message, with what has to happen around it.
+    ///
+    /// Two things only the shell can do. A finished job may have changed
+    /// a file another page holds a copy of, and that page is reloaded
+    /// *before* anything else runs — its next save writes the whole file
+    /// from memory and would drop what setup added (see
+    /// `modules::setup`'s module doc). And the first check decides, once,
+    /// whether a first launch moves the window here.
+    fn setup_message(&mut self, msg: modules::setup::Message) -> Task<Message> {
+        let reloads = modules::setup::reloads(&msg);
+        let mut tasks = Vec::new();
+        if reloads.shortcuts {
+            self.shortcuts.reload_store();
+        }
+        if reloads.window_rules {
+            self.window_rules.reload_store();
+        }
+        if reloads.idle {
+            self.desktop.reload_idle();
+        }
+        if reloads.session {
+            self.session.reload_store();
+        }
+        if reloads.default_apps {
+            // Already a reload: it re-reads the database off the UI thread.
+            tasks.push(
+                self.default_apps
+                    .update(modules::default_apps::Message::Refresh)
+                    .map(Message::DefaultApps),
+            );
+        }
+        if let modules::setup::Message::Checked(report) = &msg {
+            if std::mem::take(&mut self.first_launch_waiting)
+                && modules::setup::should_open_on_setup(true, self.started.elapsed(), report)
+            {
+                self.screen = Screen::Setup;
+                self.open_tabs();
+            }
+        }
+        tasks.push(self.setup.update(msg).map(Message::Setup));
+        Task::batch(tasks)
     }
 
     /// Points Appearance and Desktop at the tab the current page is.
@@ -1211,6 +1305,9 @@ impl App {
         );
         all.extend(
             self.system.search_entries().into_iter().map(|e| e.map(Message::System)).map(tag(Screen::System)),
+        );
+        all.extend(
+            self.setup.search_entries().into_iter().map(|e| e.map(Message::Setup)).map(tag(Screen::Setup)),
         );
         all
     }
@@ -1394,6 +1491,7 @@ impl App {
             Host::Desktop => self.desktop.view(scale).map(Message::Desktop),
             Host::Session => self.session.view(scale).map(Message::Session),
             Host::System => self.system.view(scale).map(Message::System),
+            Host::Setup => self.setup.view(scale).map(Message::Setup),
         };
 
         // Title row: the page's name and its subtitle, with whatever acts
@@ -1776,7 +1874,23 @@ mod cli_tests {
         for (i, a) in listed.iter().enumerate() {
             assert!(!listed[i + 1..].contains(a), "{a:?} is listed twice");
         }
-        assert_eq!(listed.len(), 18, "a page was added or dropped without updating this count");
+        assert_eq!(listed.len(), 19, "a page was added or dropped without updating this count");
+    }
+
+    /// `--setup` hands a running window `show-screen setup`, and that has
+    /// to land on the page rather than be refused as unknown.
+    #[test]
+    fn the_name_setup_hands_off_with_opens_the_set_up_page() {
+        assert_eq!(screen_from_cli("setup"), Some(Screen::Setup));
+        assert!(screen_name_is_known("setup"));
+    }
+
+    /// A launch that named a page is never waiting on the first check.
+    #[test]
+    fn a_requested_screen_means_the_first_check_cannot_move_the_window() {
+        assert!(first_launch_waits(None));
+        assert!(!first_launch_waits(Some(Screen::Network)));
+        assert!(!first_launch_waits(Some(Screen::Setup)), "already there; nothing to decide");
     }
 
     #[test]

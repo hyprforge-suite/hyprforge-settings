@@ -10,6 +10,7 @@ pub mod layout_canvas;
 pub mod network;
 pub mod power;
 pub mod session;
+pub mod setup;
 pub mod system;
 pub mod setting_rows;
 pub mod setup_notice;

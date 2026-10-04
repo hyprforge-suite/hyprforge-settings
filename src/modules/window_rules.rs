@@ -829,6 +829,28 @@ impl WindowRulesModule {
         }
     }
 
+    /// Re-reads `window-rules.toml` after the Set up page changed it —
+    /// notification blur adds layer rules, and a save from here writes
+    /// the whole file from what was loaded. Unreadable stays unreadable:
+    /// the lists empty and every save refused, as in `new`.
+    pub fn reload_store(&mut self) {
+        match hyprforge_windowrules::storage::load(&hyprforge_core::paths::window_rules_toml_path()) {
+            Ok(stored) => {
+                self.rules = stored.rules;
+                self.workspace_rules = stored.workspace_rules;
+                self.layer_rules = stored.layer_rules;
+                self.store_unreadable = None;
+            }
+            Err(e) => {
+                self.rules = Vec::new();
+                self.workspace_rules = Vec::new();
+                self.layer_rules = Vec::new();
+                self.store_unreadable = Some(e.to_string());
+            }
+        }
+        self.pending_delete = None;
+    }
+
     /// Writes the canonical TOML, or reports why it couldn't.
     ///
     /// Split out so a caller about to do something irreversible can find out

@@ -148,6 +148,23 @@ impl SessionModule {
             .unwrap_or_else(|| current.to_string())
     }
 
+    /// Re-reads `session.toml` after the Set up page changed it — its
+    /// `GTK_USE_PORTAL` item adds an environment variable, and a save
+    /// from here writes the whole file from what was loaded. Unreadable
+    /// refuses every save, as in `new`.
+    pub fn reload_store(&mut self) {
+        match hyprforge_session::storage::load(&session_toml()) {
+            Ok(stored) => {
+                self.stored = stored;
+                self.store_unreadable = None;
+            }
+            Err(e) => {
+                self.stored = Session::default();
+                self.store_unreadable = Some(e.to_string());
+            }
+        }
+    }
+
     fn persist(&mut self) -> Result<(), String> {
         if let Some(reason) = &self.store_unreadable {
             let message = format!(

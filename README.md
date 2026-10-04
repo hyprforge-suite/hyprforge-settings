@@ -1,14 +1,15 @@
 # hyprforge-settings
 
 The Settings app for Hyprforge — an [iced](https://iced.rs) GUI of
-eighteen pages in four sidebar groups: System (Displays, Power & battery,
-Keyboard & mouse, Default apps), Connectivity (Network, Bluetooth),
+nineteen pages in five sidebar groups: Get started (Set up), System
+(Displays, Power & battery, Keyboard & mouse, Default apps), Connectivity
+(Network, Bluetooth),
 Hyprland (Windows & workspaces, Keybinds, Animations, Window rules, Idle &
 lock, Session, Advanced) and Personal (Appearance, Wallpaper, Night light,
 Screen sharing, Tray) — `src/main.rs`'s `Screen` enum and `NAV`. A search
 palette in the header finds any page, setting or config key.
 
-The pages are drawn by thirteen modules, each a `SettingsModule`
+The pages are drawn by fourteen modules, each a `SettingsModule`
 (`src/module.rs`) under `src/modules/`, modeled directly on iced's own
 `update`/`view` split so a module feels like a miniature iced application
 rather than a bespoke plugin API. Some modules back several pages —
@@ -23,12 +24,13 @@ native Hyprland desktop apps.
 
 `hyprforge-clipboard`, `hyprforge-lock`, `hyprforge-greet` and
 `hyprforge-tray` each depend on two to nine other Hyprforge crates.
-This one depends on seventeen: `hyprforge-core`, `hyprforge-ui`,
+This one depends on eighteen: `hyprforge-core`, `hyprforge-ui`,
 `hyprforge-windowrules`, `hyprforge-input`, `hyprforge-appearance`,
 `hyprforge-look`, `hyprforge-paths`, `hyprforge-ecosystem`,
 `hyprforge-session`, `hyprforge-system`, `hyprforge-shortcuts`,
 `hyprforge-lua-import`, `hyprforge-network`, `hyprforge-bluetooth`,
-`hyprforge-power`, `hyprforge-tray` and `hyprforge-mime`. That is why
+`hyprforge-power`, `hyprforge-tray`, `hyprforge-mime` and
+`hyprforge-setup`. That is why
 `repo-plan.md` splits it last, and why a standalone `hyprforge-settings`
 repository is the least "standalone" of the nine split so far — building it fetches most of the suite's
 libraries from crates.io. It is a real settings app you can build and test on
@@ -93,6 +95,14 @@ hyprforge-settings --setup --list       each item's state
 hyprforge-settings --setup --porcelain  one id<TAB>state<TAB>reason line per item
 hyprforge-settings --setup --undo [id]  undo what setup recorded
 ```
+
+The Set up page (`--screen setup`, `src/modules/setup.rs`) is the same
+list in the window: each item's state, a switch for each one still to
+do, one Apply, and Undo for whatever setup recorded doing. On a first
+launch — nothing recorded yet and something still to do — Settings opens
+on it, unless `--screen` named another page; the check runs off the UI
+thread, and one that takes longer than two seconds leaves the window
+where it opened rather than move it under someone already using it.
 
 It writes real config, so test it against a scratch `XDG_CONFIG_HOME`
 like everything else here. The modes that write hand off to a Settings

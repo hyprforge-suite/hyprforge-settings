@@ -349,6 +349,28 @@ impl DesktopModule {
         )
     }
 
+    /// Re-reads `idle.toml` after the Set up page changed it — its idle
+    /// lock item sets `lock_cmd`, and saving the Idle tab writes the whole
+    /// file from what was loaded.
+    ///
+    /// Only idle: the other three files are nobody else's to change.
+    /// One that will not read joins `store_unreadable`, which refuses
+    /// every save on this page — the same rule `new` applies, never a
+    /// silent "nothing configured".
+    pub fn reload_idle(&mut self) {
+        match hyprforge_ecosystem::storage::load(&idle_toml()) {
+            Ok(idle) => self.idle = idle,
+            Err(e) => {
+                self.idle = idle::Settings::default();
+                let note = e.to_string();
+                self.store_unreadable = Some(match self.store_unreadable.take() {
+                    Some(others) => format!("{others}; {note}"),
+                    None => note,
+                });
+            }
+        }
+    }
+
     fn draft(&self, index: usize, field: Field, current: impl std::fmt::Display) -> String {
         self.drafts
             .get(&(index, field))

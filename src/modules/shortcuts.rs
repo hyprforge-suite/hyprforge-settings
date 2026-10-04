@@ -571,6 +571,29 @@ impl ShortcutsModule {
         )
     }
 
+    /// Re-reads `shortcuts.toml` after another writer in this process —
+    /// the Set up page — changed it.
+    ///
+    /// Every save here writes `self.shortcuts` whole, so a list loaded
+    /// before Set up added its binds would drop them on the next edit of
+    /// anything at all. The same "could not read is not empty" rule as
+    /// `new`: an unreadable file leaves the list empty *and* refuses to
+    /// save. An armed Delete is disarmed, because the row it pointed at
+    /// may have moved.
+    pub fn reload_store(&mut self) {
+        match hyprforge_shortcuts::storage::load(&hyprforge_core::paths::shortcuts_toml_path()) {
+            Ok(shortcuts) => {
+                self.shortcuts = shortcuts;
+                self.store_unreadable = None;
+            }
+            Err(e) => {
+                self.shortcuts = Vec::new();
+                self.store_unreadable = Some(e.to_string());
+            }
+        }
+        self.pending_delete = None;
+    }
+
     /// Replaces whatever is being edited, invalidating every conflict check
     /// still in flight.
     ///

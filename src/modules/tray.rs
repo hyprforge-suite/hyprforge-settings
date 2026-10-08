@@ -1,5 +1,6 @@
-//! Which of `hyprforge-trayd`'s six icons show, and where
-//! `hyprforge-traymenu` opens its right-click menu relative to the bar.
+//! Which of `hyprforge-trayd`'s six icons show, how their right-click
+//! menus are served, and where `hyprforge-traymenu` opens one relative to
+//! the bar.
 //!
 //! Unlike every other module in this directory, this screen has no D-Bus
 //! backend and no daemon to poll: its entire world is one file,
@@ -20,11 +21,11 @@
 //! reason.
 
 use crate::module::SettingsModule;
-use hyprforge_tray::Prefs;
+use hyprforge_tray::{MenuMode, Prefs};
 use hyprforge_ui::theme::{self, spacing, FontScale};
 use hyprforge_ui::widgets::{
-    config_line, hint_text, scaled_text, section_label, setting_list, setting_row, slider_style,
-    toggle,
+    config_line, hint_text, scaled_text, section_label, segmented_choice, setting_list, setting_row,
+    slider_style, toggle,
 };
 use iced::widget::{column, slider};
 use iced::{Alignment, Element, Length, Task};
@@ -89,6 +90,7 @@ pub enum Message {
     /// [`Prefs::menu_y_offset`] to disk.
     OffsetReleased,
     ClickOutsideToggled(bool),
+    MenuModeSelected(MenuMode),
 }
 
 impl TrayModule {
@@ -174,6 +176,10 @@ impl SettingsModule for TrayModule {
                 self.write(|p| p.menu_closes_on_click_outside = closes);
                 Task::none()
             }
+            Message::MenuModeSelected(mode) => {
+                self.write(|p| p.menu = mode);
+                Task::none()
+            }
         }
     }
 
@@ -185,6 +191,7 @@ impl SettingsModule for TrayModule {
         }
 
         content = content.push(self.icons_section(scale));
+        content = content.push(self.menu_mode_section(scale));
         content = content.push(self.offset_section(scale));
         content = content.push(self.dismissal_section(scale));
 
@@ -217,6 +224,40 @@ impl TrayModule {
             Err(_) => vec![unavailable_row(scale)],
         };
         group("Tray icons", rows, scale)
+    }
+
+    /// Which way a right click is served — `tray.toml`'s `menu`.
+    ///
+    /// Above the offset and the click-away rows because it decides
+    /// whether they mean anything: both are the popup's, and a bar
+    /// drawing a dbusmenu menu places and dismisses it however it likes.
+    fn menu_mode_section(&self, scale: FontScale) -> Element<'_, Message> {
+        let row: Element<'_, Message> = match &self.tray_prefs {
+            Ok(prefs) => setting_row(
+                0,
+                "Right-click menus",
+                Some(
+                    hint_text(
+                        "Automatic uses Hyprforge's own menu on Hyprland and lets your bar \
+                         draw it anywhere else. Choose \"Your bar\" if right-clicking a tray \
+                         icon shows no menu at all; the position and click-away settings \
+                         below then no longer apply.",
+                        scale,
+                    )
+                    .into(),
+                ),
+                segmented_choice(
+                    &[MenuMode::Auto, MenuMode::Popup, MenuMode::Dbusmenu],
+                    Some(&prefs.menu),
+                    |mode| menu_mode_label(*mode).to_string(),
+                    Message::MenuModeSelected,
+                    scale,
+                ),
+                scale,
+            ),
+            Err(_) => unavailable_row(scale),
+        };
+        group("Menus", vec![row], scale)
     }
 
     /// The menu offset — the setting the whole screen exists for.
@@ -290,6 +331,16 @@ impl TrayModule {
             Err(_) => unavailable_row(scale),
         };
         group("Clicking away", vec![row], scale)
+    }
+}
+
+/// What each menu mode is called on the page — the user's words for who
+/// draws the menu, not the protocol's names.
+fn menu_mode_label(mode: MenuMode) -> &'static str {
+    match mode {
+        MenuMode::Auto => "Automatic",
+        MenuMode::Popup => "Hyprforge",
+        MenuMode::Dbusmenu => "Your bar",
     }
 }
 
@@ -401,6 +452,20 @@ mod tests {
             let on_disk = hyprforge_tray::prefs::load().unwrap();
             assert!(on_disk.power);
             assert_eq!(on_disk, Prefs { power: true, ..Prefs::default() });
+        });
+    }
+
+    /// Choosing a menu mode writes `tray.toml`'s `menu` and nothing else.
+    #[test]
+    fn choosing_a_menu_mode_writes_only_its_own_field() {
+        with_temp_config(|_dir| {
+            let (mut m, _task) = TrayModule::new();
+            assert_eq!(m.tray_prefs.as_ref().unwrap().menu, MenuMode::Auto, "a first run is automatic");
+
+            let _ = m.update(Message::MenuModeSelected(MenuMode::Dbusmenu));
+            let on_disk = hyprforge_tray::prefs::load().unwrap();
+            assert_eq!(on_disk, Prefs { menu: MenuMode::Dbusmenu, ..Prefs::default() });
+            let _ = m.view(FontScale::default());
         });
     }
 

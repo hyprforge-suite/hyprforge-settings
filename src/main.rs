@@ -1252,6 +1252,9 @@ impl App {
         if reloads.session {
             self.session.reload_store();
         }
+        if reloads.system {
+            self.system.reload_store();
+        }
         if reloads.default_apps {
             // Already a reload: it re-reads the database off the UI thread.
             tasks.push(

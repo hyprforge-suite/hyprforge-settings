@@ -236,6 +236,25 @@ pub struct CatalogScreen<M: Catalogued> {
 }
 
 impl<M: Catalogued> CatalogScreen<M> {
+    /// Reads the store again, after something other than this page wrote
+    /// it — Set up's lock-restore item writes `system.toml`. Without it the
+    /// page's next save writes the whole file from memory and drops what
+    /// was added underneath it.
+    pub fn reload_store(&mut self) {
+        match hyprforge_core::hlconfig::storage::load(&M::toml_path()) {
+            Ok(settings) => {
+                self.invalid = settings.validate(M::catalog());
+                self.settings = settings;
+                self.store_unreadable = None;
+            }
+            Err(e) => {
+                self.settings = Settings::default();
+                self.invalid = Vec::new();
+                self.store_unreadable = Some(e.to_string());
+            }
+        }
+    }
+
     pub fn new() -> (Self, Task<Message>) {
         // A failure here must never look like "you've configured nothing":
         // that reading is what turns one bad parse into a wiped store on

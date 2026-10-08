@@ -158,6 +158,8 @@ pub struct Reloads {
     pub default_apps: bool,
     /// `idle.toml` — the idle lock's `lock_cmd`.
     pub idle: bool,
+    /// `system.toml` — lock restore's `misc:allow_session_lock_restore`.
+    pub system: bool,
     /// `session.toml` — `GTK_USE_PORTAL`.
     pub session: bool,
 }
@@ -177,6 +179,7 @@ impl Reloads {
                 "notif-blur" => r.window_rules = true,
                 id if id.starts_with("default-") => r.default_apps = true,
                 "idle-lock" => r.idle = true,
+                "lock-restore" => r.system = true,
                 "gtk-portal" => r.session = true,
                 _ => {}
             }
@@ -206,7 +209,7 @@ fn group(item: &Item) -> &'static str {
         "wiring" => "Hyprland wiring",
         id if id.starts_with("service-") => "Background services",
         id if id.starts_with("bind-") => "Shortcuts",
-        "idle-lock" | "notif-blur" => "Lock & notifications",
+        "idle-lock" | "lock-restore" | "notif-blur" => "Lock & notifications",
         _ => "Default apps & dialogs",
     }
 }
@@ -802,6 +805,7 @@ mod tests {
         assert_eq!(Reloads::after(&["notif-blur"]), Reloads { window_rules: true, ..Reloads::default() });
         assert_eq!(Reloads::after(&["default-images"]), Reloads { default_apps: true, ..Reloads::default() });
         assert_eq!(Reloads::after(&["idle-lock"]), Reloads { idle: true, ..Reloads::default() });
+        assert_eq!(Reloads::after(&["lock-restore"]), Reloads { system: true, ..Reloads::default() });
         assert_eq!(Reloads::after(&["gtk-portal"]), Reloads { session: true, ..Reloads::default() });
         assert_eq!(Reloads::after(&["wiring", "service-trayd", "portal-dialog", "show-in-folder"]), Reloads::default());
     }

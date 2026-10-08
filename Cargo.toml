@@ -21,8 +21,9 @@ path = "src/main.rs"
 # local `crates/` directories, and as the root of this component's own
 # repository, where cargo fetches the published crates.
 #
-# This is the hub of the suite — repo-plan.md puts it last to split for
-# exactly this reason: seventeen Hyprforge crates, not one or two.
+# This is the hub of the suite — the suite's docs/design/repo-plan.md puts
+# it last to split for exactly this reason: eighteen Hyprforge crates, not
+# one or two.
 #
 # default-features = false, features = ["dbus"]: hyprforge-core's `dbus`
 # (zbus) support is optional and only the settings app, displayctl and

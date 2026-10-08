@@ -31,7 +31,7 @@ This one depends on eighteen: `hyprforge-core`, `hyprforge-ui`,
 `hyprforge-lua-import`, `hyprforge-network`, `hyprforge-bluetooth`,
 `hyprforge-power`, `hyprforge-tray`, `hyprforge-mime` and
 `hyprforge-setup`. That is why
-`repo-plan.md` splits it last, and why a standalone `hyprforge-settings`
+the suite's `docs/design/repo-plan.md` splits it last, and why a standalone `hyprforge-settings`
 repository is the least "standalone" of the ten components — building it fetches most of the suite's
 libraries from crates.io. It is a real settings app you can build and test on
 its own; it is not a small one.

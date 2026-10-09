@@ -9,6 +9,8 @@ lock, Session, Advanced) and Personal (Appearance, Wallpaper, Night light,
 Screen sharing, Tray) — `src/main.rs`'s `Screen` enum and `NAV`. A search
 palette in the header finds any page, setting or config key.
 
+![The Settings app on its Appearance page: the sidebar of pages in five groups, and the desktop theme's options](https://raw.githubusercontent.com/hyprforge-suite/hyprforge/main/docs/images/settings.png)
+
 The pages are drawn by fourteen modules, each a `SettingsModule`
 (`src/module.rs`) under `src/modules/`, modeled directly on iced's own
 `update`/`view` split so a module feels like a miniature iced application

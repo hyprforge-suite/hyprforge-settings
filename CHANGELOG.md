@@ -2,6 +2,12 @@
 
 This component is released with the Hyprforge suite and shares its version: see the suite's `CHANGELOG.md`.
 
+## [0.1.12] - 2026-10-10
+
+<!-- Drafted by tools/changelog.py; sort into Added / Changed / Fixed before releasing. -->
+
+- Set up page: polkit-blur reloads window rules and sits with the lock
+
 ## [0.1.10] - 2026-10-09
 
 <!-- Drafted by tools/changelog.py; sort into Added / Changed / Fixed before releasing. -->

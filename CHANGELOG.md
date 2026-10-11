@@ -2,6 +2,14 @@
 
 This component is released with the Hyprforge suite and shares its version: see the suite's `CHANGELOG.md`.
 
+## [0.1.14] - 2026-10-11
+
+<!-- Drafted by tools/changelog.py; sort into Added / Changed / Fixed before releasing. -->
+
+- Name tools/hf where check.sh used to be
+- Setup: idle-dispatch sits with the lock items and reloads the Idle page
+- README: no component count to go stale
+
 ## [0.1.12] - 2026-10-10
 
 <!-- Drafted by tools/changelog.py; sort into Added / Changed / Fixed before releasing. -->

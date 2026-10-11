@@ -56,7 +56,6 @@ struct HeadDetail {
     height: i32,
     refresh_mhz: i32,
     scale: f64,
-    #[allow(dead_code)]
     transform: String,
     enabled: bool,
 }

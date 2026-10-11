@@ -132,18 +132,10 @@ pub enum Message {
     /// registered — `org.bluez.Agent1`, driven by
     /// `hyprforge_bluetooth::agent`.
     ///
-    /// This screen is built entirely in terms of [`PairingPrompt`], which
-    /// already existed when this was written — every test below drives
-    /// this variant directly, the same way it would be driven by a real
-    /// subscription once one is wired up. See the comment above
-    /// `LazyBlueZBackend` for why the real `agent::PairingRequest`
-    /// channel isn't plumbed all the way to `subscription()` yet, and
-    /// what's needed to finish that.
-    ///
-    /// `#[allow(dead_code)]`: nothing constructs this outside tests until
-    /// that wiring exists, and that's the honest state of things rather
-    /// than something to paper over with a fake caller.
-    #[allow(dead_code)]
+    /// Carries only the [`PairingPrompt`], never the request: the prompt
+    /// is plain data every test below builds directly, and a request's
+    /// constructor is private to `hyprforge-bluetooth`. `pairing_stream`
+    /// sends this; the answer goes back through `answer_pairing`.
     PairingPrompted(PairingPrompt),
     /// Match (on a [`PairingPrompt::Confirm`]) or Accept (on
     /// [`PairingPrompt::Authorize`]) — answering the prompt
@@ -837,55 +829,6 @@ fn passkey_digits(passkey: &Passkey) -> String {
     passkey.to_string()
 }
 
-// The seam where `hyprforge_bluetooth::agent`'s pairing-prompt channel
-// plugs in — and why it stops at a seam rather than going all the way
-// to `subscription()`.
-//
-// `hyprforge_bluetooth::agent` landed while this module was being
-// written. Its `register(connection)` hands back an
-// `mpsc::UnboundedReceiver<agent::PairingRequest>`, and each
-// `PairingRequest` carries a `pub prompt: PairingPrompt` alongside
-// `accept(self)`/`reject(self)` — deliberately consuming, so accept and
-// reject can't be swapped at the call site.
-//
-// Two things stop this screen from owning that receiver directly:
-//
-// 1. `PairingRequest`'s constructor is private — `register` is the only
-//    way to produce one. That is almost certainly deliberate (the same
-//    instinct as `PairingPrompt::needs_an_answer` being the only way to
-//    ask what a prompt wants), but it also means this module's own
-//    tests, which construct every `PairingPrompt` variant directly,
-//    cannot construct a `PairingRequest` to drive `Message::Paired`'s
-//    sibling messages the same way. Message would need to carry the
-//    request in order to call `accept`/`reject` on it later, and this
-//    module cannot build one to test that path.
-// 2. Registering the agent needs a live `zbus::Connection` up front,
-//    kept for the app's lifetime. `LazyBlueZBackend` (below) only
-//    creates one lazily, inside a private `get()`, on the first status
-//    or device call — there is nothing today that hands a `Connection`
-//    to `main.rs` at startup to register against.
-//
-// Both are `main.rs`-level decisions, not this screen's: whether the
-// backend grows a way to expose or share its connection, and how a
-// `PairingRequest` becomes a `Message::PairingPrompted(prompt)` plus
-// something *outside* this module's own state that still holds the
-// means to answer it when `PairingAccepted`/`PairingCancelled` comes
-// back out. `Message::PairingPrompted(PairingPrompt)` and the
-// `PairingAccepted`/`PairingCancelled` messages this screen already
-// sends are the seam — whatever bridges the real channel just needs to
-// map a `PairingRequest` into `PairingPrompted(request.prompt.clone())`
-// on the way in, and watch for this screen's own outgoing messages (or
-// take the accept/reject decision some other way) to call
-// `request.accept()` / `request.reject()` on the way out.
-
-/// The real backend, connected lazily.
-///
-/// `BlueZBackend::connect()` is async and fallible (no system bus, no
-/// `bluetoothd`), but `App::new` — like every module's — builds its
-/// screens synchronously and hands back a `Task` for anything that has to
-/// wait. Wrapping the connection behind [`BluetoothBackend`] itself means
-/// `BluetoothModule` never needs an `Option` for "not connected yet":
-/// connecting is just what the first call does.
 /// The answer half of a pairing conversation.
 ///
 /// The two halves genuinely live in different places. A `PairingRequest`
@@ -966,6 +909,14 @@ async fn forward_pairing(
     Ok(())
 }
 
+/// The real backend, connected lazily.
+///
+/// `BlueZBackend::connect()` is async and fallible (no system bus, no
+/// `bluetoothd`), but `App::new` — like every module's — builds its
+/// screens synchronously and hands back a `Task` for anything that has to
+/// wait. Wrapping the connection behind [`BluetoothBackend`] itself means
+/// `BluetoothModule` never needs an `Option` for "not connected yet":
+/// connecting is just what the first call does.
 pub struct LazyBlueZBackend {
     /// Only a *successful* connection is cached.
     ///

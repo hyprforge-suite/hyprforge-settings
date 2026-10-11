@@ -178,7 +178,7 @@ impl Reloads {
                 id if id.starts_with("bind-") => r.shortcuts = true,
                 "notif-blur" | "polkit-blur" => r.window_rules = true,
                 id if id.starts_with("default-") => r.default_apps = true,
-                "idle-lock" => r.idle = true,
+                "idle-lock" | "idle-dispatch" => r.idle = true,
                 "lock-restore" => r.system = true,
                 "gtk-portal" => r.session = true,
                 _ => {}
@@ -209,7 +209,7 @@ fn group(item: &Item) -> &'static str {
         "wiring" => "Hyprland wiring",
         id if id.starts_with("service-") => "Background services",
         id if id.starts_with("bind-") => "Shortcuts",
-        "idle-lock" | "lock-restore" | "notif-blur" | "polkit-blur" => "Lock & notifications",
+        "idle-lock" | "idle-dispatch" | "lock-restore" | "notif-blur" | "polkit-blur" => "Lock & notifications",
         _ => "Default apps & dialogs",
     }
 }

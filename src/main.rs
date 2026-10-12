@@ -405,9 +405,25 @@ fn revert_sentence(left: u32) -> String {
     }
 }
 
+/// How many of the change's lines the prompt shows before "and N more":
+/// it has to fit a fixed window that may be all that's legible.
+const REVERT_LINES: usize = 3;
+
+/// The change's lines as the prompt shows them.
+fn revert_lines(changes: &[String]) -> Vec<String> {
+    let mut lines: Vec<String> = changes.iter().take(REVERT_LINES).cloned().collect();
+    if changes.len() > REVERT_LINES {
+        lines.push(format!("and {} more", changes.len() - REVERT_LINES));
+    }
+    lines
+}
+
 fn revert_popup_settings() -> window::Settings {
     window::Settings {
-        size: Size::new(460.0, 180.0),
+        // Tall enough for the change's lines under the question; the
+        // window is fixed-size and opens before the daemon has said what
+        // changed.
+        size: Size::new(460.0, 260.0),
         position: window::Position::Centered,
         resizable: false,
         decorations: false,
@@ -1113,11 +1129,19 @@ impl App {
             scaled_text(revert_sentence(left), density::META_TEXT_BASE, scale).color(text_dim()),
         ]
         .spacing(spacing::XS);
+        // What it is asking about, under the question: the daemon's lines,
+        // in the mono a config value is shown in.
+        let changes = revert_lines(self.displays.revert_changes())
+            .into_iter()
+            .fold(column![].spacing(2.0), |col, line| {
+                col.push(scaled_text(line, density::META_TEXT_BASE, scale).font(hyprforge_ui::theme::mono_font()).color(text_dim()))
+            });
         container(
             column![
                 row![countdown_ring(left, total, scale.apply(REVERT_RING_BASE)), question]
                     .spacing(spacing::MD)
                     .align_y(iced::Alignment::Center),
+                changes,
                 row![
                     Space::new().width(Length::Fill),
                     secondary_button("Revert")
@@ -1953,5 +1977,21 @@ mod revert_tests {
     fn the_prompt_says_doing_nothing_reverts_and_counts_properly() {
         assert_eq!(revert_sentence(1), "Reverting automatically in 1 second if you can't see this.");
         assert_eq!(revert_sentence(9), "Reverting automatically in 9 seconds if you can't see this.");
+    }
+}
+
+#[cfg(test)]
+mod revert_prompt_tests {
+    use super::*;
+
+    /// The prompt names at most three outputs' changes, then says how
+    /// many more there are rather than letting them fall off its window.
+    #[test]
+    fn the_prompt_shows_three_changes_and_counts_the_rest() {
+        let changes: Vec<String> = (1..=5).map(|n| format!("DP-{n}: scale 1 → 2")).collect();
+        let shown = revert_lines(&changes);
+        assert_eq!(shown.len(), 4);
+        assert_eq!(shown[3], "and 2 more");
+        assert_eq!(revert_lines(&changes[..2]).len(), 2, "nothing added under the limit");
     }
 }

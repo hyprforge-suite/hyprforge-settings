@@ -538,6 +538,8 @@ pub enum Message {
     RevertActionDone(Result<(), String>),
     /// One tick of the revert countdown.
     RevertTick,
+    /// What the provisional change changed, as the daemon describes it.
+    RevertChanges(Vec<String>),
     SignalReceived(SignalKind),
     ToggleOtherProfiles,
     EditLayout(String),
@@ -610,6 +612,11 @@ pub struct DisplaysModule {
     /// draw how much of it is left rather than only a number. Set and
     /// cleared with `revert_seconds_left`, never on its own.
     revert_seconds_total: Option<u32>,
+    /// What the provisional change changed, one line per output, so the
+    /// prompt can say what it is asking about. Empty until the daemon
+    /// answers, and for a daemon too old to (the prompt then asks as it
+    /// always did). Cleared with `revert_seconds_left`.
+    revert_changes: Vec<String>,
     /// Whether the rarely-used per-head controls (numeric position, output
     /// policy, head swaps) are expanded. Collapsed on open.
     show_advanced: bool,
@@ -819,6 +826,7 @@ impl DisplaysModule {
                 deleting: None,
                 revert_seconds_left: None,
                 revert_seconds_total: None,
+                revert_changes: Vec::new(),
                 show_advanced: false,
                 show_warnings: false,
                 last_event: None,
@@ -842,6 +850,11 @@ impl DisplaysModule {
 
     pub fn revert_seconds_left(&self) -> Option<u32> {
         self.revert_seconds_left
+    }
+
+    /// What the pending change changed — see `revert_changes`.
+    pub fn revert_changes(&self) -> &[String] {
+        &self.revert_changes
     }
 
     /// Applies one edit to the selected head, then records that the
@@ -1305,11 +1318,13 @@ impl SettingsModule for DisplaysModule {
                     SignalKind::RevertPending { seconds } => {
                         self.revert_seconds_left = Some(seconds);
                         self.revert_seconds_total = Some(seconds);
-                        return Task::none();
+                        self.revert_changes.clear();
+                        return Task::perform(pending_changes(), Message::RevertChanges);
                     }
                     SignalKind::RevertResolved { reverted } => {
                         self.revert_seconds_left = None;
                         self.revert_seconds_total = None;
+                        self.revert_changes.clear();
                         let msg = if reverted {
                             "Display change reverted."
                         } else {
@@ -1341,14 +1356,24 @@ impl SettingsModule for DisplaysModule {
                 }
                 Task::none()
             }
+            Message::RevertChanges(changes) => {
+                // Only while the prompt is up: an answer arriving after it
+                // was resolved describes a change that is no longer pending.
+                if self.revert_seconds_left.is_some() {
+                    self.revert_changes = changes;
+                }
+                Task::none()
+            }
             Message::KeepLayout => {
                 self.revert_seconds_left = None;
                 self.revert_seconds_total = None;
+                self.revert_changes.clear();
                 Task::perform(confirm_layout(), Message::RevertActionDone)
             }
             Message::RevertLayoutNow => {
                 self.revert_seconds_left = None;
                 self.revert_seconds_total = None;
+                self.revert_changes.clear();
                 Task::perform(revert_layout(), Message::RevertActionDone)
             }
             Message::RevertActionDone(Ok(())) => Task::none(),
@@ -2422,6 +2447,22 @@ async fn apply_inner(id: &str) -> Result<(), String> {
     bounded("applying the layout", APPLY_TIMEOUT, proxy.apply_profile_reversible(id))
         .await
         .map(|_seconds| ())
+}
+
+/// What the pending change changed. Any failure — a daemon older than
+/// the method, one that doesn't answer — is an empty list: the prompt
+/// still asks, only without naming the change, which is no worse than
+/// before it could.
+async fn pending_changes() -> Vec<String> {
+    let lines = async {
+        let conn = connect().await?;
+        let proxy = displayd(&conn).await?;
+        bounded("describing the pending change", CALL_TIMEOUT, proxy.pending_changes()).await
+    };
+    lines.await.unwrap_or_else(|e: String| {
+        tracing::debug!("the display daemon didn't describe the pending change: {e}");
+        Vec::new()
+    })
 }
 
 async fn confirm_layout() -> Result<(), String> {

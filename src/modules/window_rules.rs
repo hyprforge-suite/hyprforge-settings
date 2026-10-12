@@ -523,6 +523,13 @@ pub enum Message {
     PinMonitor(usize, MonitorChoice),
     PinDefault(usize, bool),
     PinPersistent(usize, bool),
+    AddLayerRule,
+    /// Arms the confirm on a layer rule; the delete is the `Confirm`.
+    DeleteLayerRule(usize),
+    DeleteLayerRuleConfirm(usize),
+    LayerNamespace(usize, String),
+    LayerBlur(usize, bool),
+    LayerEnabled(usize, bool),
     MonitorsLoaded(Vec<Monitor>),
     DraftSave,
     DraftCancel,
@@ -614,11 +621,9 @@ pub struct WindowRulesModule {
     /// `storage::Rules` so the list operations below can keep indexing one
     /// flat Vec; the two are recombined on save.
     workspace_rules: Vec<WorkspaceRule>,
-    /// Layer rules (blur behind notifications), written by Setup and not
-    /// editable on this page yet. Held only so that a save from here
-    /// writes them back: `storage::save` writes the whole file, and a
-    /// module that forgot them would delete what Setup added the first
-    /// time anyone touched a window rule.
+    /// Layer rules — blur behind a bar, a launcher, the notifications
+    /// Setup adds. Edited in their own section; a flat list like the pins,
+    /// since a layer rule has one effect and order is not offered.
     layer_rules: Vec<hyprforge_windowrules::LayerRule>,
     draft: Option<RuleDraft>,
     /// Which Hyprland config the user has. `None` of the non-`Lua` variants
@@ -664,6 +669,7 @@ pub struct WindowRulesModule {
 enum PendingDelete {
     Rule(usize),
     WorkspacePin(usize),
+    LayerRule(usize),
 }
 
 /// Shown against an import candidate that duplicates something already
@@ -774,6 +780,17 @@ impl WindowRulesModule {
             return Task::none();
         };
         f(pin);
+        self.save_and_maybe_reload()
+    }
+
+    /// Applies `f` to the layer rule at `index`, then persists — saved
+    /// mid-edit like a pin, since a rule with no namespace yet is skipped
+    /// by the codegen rather than written half-made.
+    fn edit_layer(&mut self, index: usize, f: impl FnOnce(&mut hyprforge_windowrules::LayerRule)) -> Task<Message> {
+        let Some(rule) = self.layer_rules.get_mut(index) else {
+            return Task::none();
+        };
+        f(rule);
         self.save_and_maybe_reload()
     }
 
@@ -1087,6 +1104,40 @@ impl SettingsModule for WindowRulesModule {
             Message::PinMonitor(i, choice) => self.edit_pin(i, |p| p.monitor = choice.selector),
             Message::PinDefault(i, v) => self.edit_pin(i, |p| p.default = v),
             Message::PinPersistent(i, v) => self.edit_pin(i, |p| p.persistent = v),
+            Message::AddLayerRule => {
+                // A stable name now, as a window rule gets one: it is how
+                // anything — Setup included — finds this rule again.
+                let existing: Vec<String> = self
+                    .rules
+                    .iter()
+                    .map(|r| r.name.clone())
+                    .chain(self.layer_rules.iter().map(|r| r.name.clone()))
+                    .collect();
+                self.layer_rules.push(hyprforge_windowrules::LayerRule {
+                    name: generate_rule_name("layer", &existing),
+                    enabled: true,
+                    namespace: String::new(),
+                    // Blur is the one effect a layer rule has here, so a
+                    // new one is for it.
+                    blur: Some(true),
+                });
+                Task::none()
+            }
+            Message::DeleteLayerRule(i) => {
+                self.pending_delete = Some(PendingDelete::LayerRule(i));
+                Task::none()
+            }
+            Message::DeleteLayerRuleConfirm(i) => {
+                self.pending_delete = None;
+                if i < self.layer_rules.len() {
+                    self.layer_rules.remove(i);
+                    return self.save_and_maybe_reload();
+                }
+                Task::none()
+            }
+            Message::LayerNamespace(i, v) => self.edit_layer(i, |r| r.namespace = v),
+            Message::LayerBlur(i, v) => self.edit_layer(i, |r| r.blur = Some(v)),
+            Message::LayerEnabled(i, v) => self.edit_layer(i, |r| r.enabled = v),
             Message::ToggleAdvanced => {
                 self.show_advanced = !self.show_advanced;
                 Task::none()
@@ -1374,6 +1425,7 @@ impl SettingsModule for WindowRulesModule {
         );
 
         content = content.push(self.workspace_pins_view(scale));
+        content = content.push(self.layer_rules_view(scale));
 
         container(content).padding(spacing::LG).into()
     }
@@ -1649,6 +1701,64 @@ impl WindowRulesModule {
         );
 
         section("Workspaces on monitors", scale, body)
+    }
+
+    /// Blur behind layer surfaces — bars, launchers, notifications — one
+    /// row each: the namespace it matches, blur, on or off.
+    fn layer_rules_view(&self, scale: FontScale) -> Element<'_, Message> {
+        let mut list = column![].spacing(spacing::MD);
+        if self.layer_rules.is_empty() {
+            list = list.push(meta_text(
+                "No layer rules. A layer rule blurs what is behind a bar, a \
+                 launcher or a notification — anything drawn as a layer \
+                 rather than a window.",
+                13.0,
+                scale,
+            ));
+        }
+        for (i, rule) in self.layer_rules.iter().enumerate() {
+            let actions: Vec<Element<'_, Message>> = if self.pending_delete == Some(PendingDelete::LayerRule(i)) {
+                vec![
+                    secondary_button("Keep").on_press(Message::DeleteCancel).into(),
+                    danger_button("Remove for good", Message::DeleteLayerRuleConfirm(i)),
+                ]
+            } else {
+                vec![danger_button("Remove", Message::DeleteLayerRule(i))]
+            };
+            let mut entry = column![
+                row![text_input("namespace (regex), e.g. ^waybar$", &rule.namespace)
+                    .on_input(move |v| Message::LayerNamespace(i, v))]
+                .extend(actions)
+                .spacing(spacing::SM)
+                .align_y(iced::Alignment::Center),
+                row_field("Blur behind it", toggle(rule.blur == Some(true), scale).on_toggle(move |v| Message::LayerBlur(i, v))),
+                row_field("On", toggle(rule.enabled, scale).on_toggle(move |v| Message::LayerEnabled(i, v))),
+            ]
+            .spacing(spacing::XS);
+            // The codegen skips a rule with no namespace, which from here
+            // looks like a configured row doing nothing — say so.
+            if rule.namespace.trim().is_empty() {
+                entry = entry.push(
+                    scaled_text("Name a namespace — this rule does nothing until you do.", 12.0, scale)
+                        .color(hyprforge_ui::theme::warning()),
+                );
+            }
+            list = list.push(entry);
+        }
+        let body = column![
+            list,
+            // Where the names come from, since nothing on screen says.
+            meta_text(
+                "`hyprctl layers` lists every layer surface's namespace. Anchor \
+                 it — ^notif$ — or it also matches notif-center and anything \
+                 else containing it.",
+                12.0,
+                scale,
+            ),
+            container(secondary_button("Add a layer rule").on_press(Message::AddLayerRule)).width(Length::Fill),
+        ]
+        .spacing(spacing::MD);
+        section("Layer rules", scale, body)
     }
 
     /// The open-window list, inline under the form rather than as a modal —
@@ -2614,6 +2724,54 @@ mod tests {
             let saved = hyprforge_windowrules::storage::load(&path).unwrap();
             assert_eq!(saved.workspace_rules.len(), 1, "the pin was saved");
             assert_eq!(saved.layer_rules, vec![blur], "and the layer rule survived it");
+        });
+    }
+
+    /// The Setup-added blur can be seen, turned off and removed here, and
+    /// a rule added here is saved under a name of its own.
+    #[test]
+    fn layer_rules_can_be_added_edited_and_removed() {
+        crate::modules::with_temp_env(|_| {
+            let path = hyprforge_core::paths::window_rules_toml_path();
+            let blur = hyprforge_windowrules::LayerRule {
+                name: "hyprforge-notif-blur".into(),
+                enabled: true,
+                namespace: "^notif$".into(),
+                blur: Some(true),
+            };
+            hyprforge_windowrules::storage::save(
+                &path,
+                &hyprforge_windowrules::storage::Rules { layer_rules: vec![blur], ..Default::default() },
+            )
+            .unwrap();
+
+            let mut m = WindowRulesModule::new().0;
+            assert_eq!(m.layer_rules.len(), 1, "the Setup rule is listed");
+            let _ = m.update(Message::LayerEnabled(0, false));
+            let _ = m.update(Message::AddLayerRule);
+            let _ = m.update(Message::LayerNamespace(1, "^waybar$".into()));
+            let saved = hyprforge_windowrules::storage::load(&path).unwrap();
+            assert!(!saved.layer_rules[0].enabled, "turned off, and kept");
+            assert_eq!(saved.layer_rules[1].namespace, "^waybar$");
+            assert_eq!(saved.layer_rules[1].blur, Some(true), "a new rule is for blur");
+            assert_ne!(saved.layer_rules[1].name, saved.layer_rules[0].name);
+
+            let _ = m.update(Message::DeleteLayerRule(0));
+            assert_eq!(m.layer_rules.len(), 2, "one press only arms the row");
+            let _ = m.update(Message::DeleteLayerRuleConfirm(0));
+            let saved = hyprforge_windowrules::storage::load(&path).unwrap();
+            assert_eq!(saved.layer_rules.len(), 1);
+            assert_eq!(saved.layer_rules[0].namespace, "^waybar$");
+        });
+    }
+
+    /// A stale index from a row that is gone is inert, as for pins.
+    #[test]
+    fn editing_a_layer_rule_that_is_gone_does_nothing() {
+        with_isolated_module(|m| {
+            let _ = m.update(Message::DeleteLayerRuleConfirm(2));
+            let _ = m.update(Message::LayerNamespace(2, "x".into()));
+            assert!(m.layer_rules.is_empty());
         });
     }
 

@@ -141,6 +141,7 @@ pub fn value_text(value: &hyprforge_core::hlconfig::Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
+        Value::Pair([x, y]) => format!("{x}, {y}"),
         Value::Text(t) => t.clone(),
     }
 }

@@ -232,6 +232,29 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
                     scale,
                 )
             }
+            // Two fields for one value: an offset, a position, a size.
+            // Both edit the same draft, `x, y`, so a pair is applied by
+            // Enter and checked exactly as a single number is — through
+            // `parse_for` and the catalog's ranges — and a half-typed
+            // pair is a draft, never written.
+            Kind::Vec2 { .. } => {
+                let shown = self.shown_text(setting);
+                let (x, y) = split_pair(&shown);
+                let field = |placeholder: &'static str, text: String| {
+                    text_input(placeholder, &text)
+                        .padding(spacing::SM)
+                        .style(inset_input_style)
+                        .width(Length::Fixed(scale.apply(TEXT_FIELD_WIDTH / 2.0 - spacing::XS)))
+                        .on_submit(self.on_submit.clone())
+                };
+                let (x_kept, y_kept) = (x.clone(), y.clone());
+                row![
+                    field("x", x).on_input(move |t| on_draft(key, join_pair(&t, &y_kept))),
+                    field("y", y).on_input(move |t| on_draft(key, join_pair(&x_kept, &t))),
+                ]
+                .spacing(spacing::SM)
+                .into()
+            }
             _ => text_input(&placeholder_for(&setting.kind), &self.shown_text(setting))
                 .on_input(move |raw| on_draft(key, raw))
                 .on_submit(self.on_submit.clone())
@@ -317,6 +340,11 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
 /// A row's config line: `key = value`, with an empty value written as
 /// `""` — a bare `key = ` reads as a line that failed to draw.
 fn config_text(key: &str, value: &Value) -> String {
+    // A pair is written as an array, and the line says so — `2, 3` alone
+    // isn't what the file holds.
+    if let Value::Pair([x, y]) = value {
+        return format!("{key} = {{ {}, {} }}", pair_part(*x), pair_part(*y));
+    }
     match render_for_edit(value) {
         v if v.is_empty() => format!("{key} = \"\""),
         v => format!("{key} = {v}"),
@@ -533,8 +561,33 @@ pub fn render_for_edit(value: &Value) -> String {
                 format!("{s}.0")
             }
         }
+        Value::Pair([x, y]) => format!("{}, {}", pair_part(*x), pair_part(*y)),
         Value::Text(s) => s.clone(),
     }
+}
+
+/// One number of a pair as typed: `2`, not `2.0` — a pair's numbers are
+/// pixels and millimetres, and Hyprland reads either form.
+fn pair_part(f: f64) -> String {
+    if f.fract() == 0.0 && f.abs() < 1e15 {
+        format!("{}", f as i64)
+    } else {
+        f.to_string()
+    }
+}
+
+/// A pair's draft, `x, y`, as its two fields' text. Split at the first
+/// comma, so a stray comma typed into the first field shows up as a
+/// parse error under the row rather than vanishing.
+fn split_pair(draft: &str) -> (String, String) {
+    match draft.split_once(',') {
+        Some((x, y)) => (x.trim().to_string(), y.trim().to_string()),
+        None => (draft.trim().to_string(), String::new()),
+    }
+}
+
+fn join_pair(x: &str, y: &str) -> String {
+    format!("{x}, {y}")
 }
 
 fn placeholder_for(kind: &Kind) -> String {
@@ -571,6 +624,13 @@ pub fn parse_for(kind: &Kind, raw: &str) -> Result<Value, String> {
         // same rule applies whether it was typed here or written into the
         // TOML by hand.
         Kind::Color { .. } | Kind::ColorInt { .. } => Ok(Value::Text(trimmed.to_string())),
+        Kind::Vec2 { .. } => {
+            let (x, y) = split_pair(trimmed);
+            match (x.parse::<f64>(), y.parse::<f64>()) {
+                (Ok(x), Ok(y)) => Ok(Value::Pair([x, y])),
+                _ => Err("expected two numbers".to_string()),
+            }
+        }
         // Text keeps its surrounding whitespace: a layout list like
         // "us, cz" is the user's to format.
         Kind::Text { .. } | Kind::TextEnum { .. } => Ok(Value::Text(raw.to_string())),
@@ -622,6 +682,21 @@ mod tests {
     fn a_whole_float_keeps_its_decimal_point() {
         assert_eq!(render_for_edit(&Value::Float(1.0)), "1.0");
         assert_eq!(render_for_edit(&Value::Float(0.5)), "0.5");
+    }
+
+    /// The two fields' draft reads back as the pair, either number may
+    /// be fractional or negative, and anything short of two numbers is a
+    /// draft error rather than a half-written pair.
+    #[test]
+    fn a_pair_draft_parses_as_two_numbers_and_shows_as_typed() {
+        let kind = Kind::Vec2 { default: (0.0, 0.0), min: (-250.0, -250.0), max: (250.0, 250.0) };
+        assert_eq!(parse_for(&kind, " 4, -2.5 "), Ok(Value::Pair([4.0, -2.5])));
+        assert_eq!(parse_for(&kind, "4, ").unwrap_err(), "expected two numbers");
+        assert!(parse_for(&kind, "4").is_err());
+        assert_eq!(render_for_edit(&Value::Pair([4.0, -2.5])), "4, -2.5");
+        assert_eq!(split_pair("4, -2.5"), ("4".to_string(), "-2.5".to_string()));
+        assert_eq!(join_pair("4", ""), "4, ");
+        assert_eq!(config_text("decoration:shadow:offset", &Value::Pair([4.0, 0.0])), "decoration:shadow:offset = { 4, 0 }");
     }
 
     #[test]

@@ -47,6 +47,38 @@ pub fn republish() {
     }
 }
 
+/// [`republish`], but only when the copy the lock screen reads is not
+/// what resolving would write now — called as Settings starts.
+///
+/// The look follows things that change without Settings hearing: the
+/// border colours a person edits in `hyprland.lua` by hand, which is
+/// where most configs keep them. Every app resolves those as it opens;
+/// the lock screen and the greeter read a published copy instead (asking
+/// Hyprland before a lock can appear would put another process's answer
+/// in front of it), so without this they kept the look from the last
+/// save on the Appearance page. The greeter's copy still waits for that
+/// save — see the note on the write.
+///
+/// No test of its own: it is glue around `publish`, which writes the
+/// real paths and must never be run from a test. Returns whether it
+/// wrote.
+pub fn republish_if_stale() -> bool {
+    let mut theme = hyprforge_appearance::look::resolve();
+    theme.wallpaper = wallpaper();
+    if hyprforge_look::Theme::load(&hyprforge_paths::lock_toml_path()).is_ok_and(|current| current == theme) {
+        return false;
+    }
+    // The lock screen's copy only, not the greeter's export: that one is
+    // a system directory this user can write, and Settings is run by hand
+    // against an isolated config, where doing this on every start would
+    // put a test's look on the real login screen — which happened once.
+    // The greeter's copy still follows an explicit save (`republish`).
+    if let Err(e) = theme.save(&hyprforge_paths::lock_toml_path()) {
+        tracing::warn!(error = %e, "couldn't bring the lock screen's look up to date");
+    }
+    true
+}
+
 /// Where the downscaled copy lives. Derived, and regenerated whenever
 /// the original is newer.
 fn scaled_wallpaper_path() -> PathBuf {

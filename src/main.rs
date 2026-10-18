@@ -1654,64 +1654,38 @@ impl App {
     /// and a sidebar that emptied itself while you typed would take away
     /// the one map of the app that stays put.
     fn sidebar(&self, scale: FontScale) -> Element<'_, Message> {
-        let mut nav = column![].spacing(spacing::MD);
-        for category in NAV {
-            let mut group = column![container(section_label(category.label, scale))
-                .padding([spacing::XS, spacing::SM + 2.0])]
-            .spacing(1.0);
-            for screen in category.screens {
-                group = group.push(self.nav_item(*screen, scale));
-            }
-            nav = nav.push(group);
-        }
-
-        container(
-            iced::widget::scrollable(container(nav).padding([spacing::MD, spacing::SM]))
-                .height(Length::Fill),
-        )
-        .width(Length::Fixed(SIDEBAR_WIDTH))
-        .height(Length::Fill)
-        .style(|_theme: &Theme| container::Style {
-            background: Some(Background::Color(surface::sidebar())),
-            ..container::Style::default()
-        })
-        .into()
+        let groups = NAV
+            .iter()
+            .map(|category| hyprforge_ui::widgets::NavGroup {
+                label: Some(category.label),
+                items: category.screens.iter().map(|screen| self.nav_item(*screen, scale)).collect(),
+            })
+            .collect();
+        hyprforge_ui::widgets::nav_sidebar(groups, SIDEBAR_WIDTH, scale)
     }
 
     /// One page's entry in the sidebar: its mark, its name, and whatever
-    /// badge its module offers.
-    fn nav_item(&self, screen: Screen, scale: FontScale) -> Element<'_, Message> {
+    /// badge its module offers. The row itself is the suite's
+    /// (`hyprforge_ui::widgets::nav_row`), which the process manager's
+    /// tabs share.
+    fn nav_item(&self, screen: Screen, scale: FontScale) -> hyprforge_ui::widgets::NavItem<'_, Message> {
         let selected = self.screen == screen;
         // The text colour on the current page, dim elsewhere. Not the
         // accent: the row's own fill already says "selected" in it, and
         // an accent mark on an accent fill disappeared into it.
         let mark_color = if selected { text() } else { text_dim() };
-        let mut line = row![
-            hyprforge_ui::glyph::page(screen.glyph(), scale.apply(NAV_MARK_BASE), mark_color),
-            scaled_text(screen.title(), density::ROW_TEXT_BASE * 0.9, scale).color(text()),
-            Space::new().width(Length::Fill),
-        ]
-        .spacing(spacing::SM + 2.0)
-        .align_y(iced::Alignment::Center);
-        match self.badge_for(screen) {
-            Some(NavBadge::Text(t)) => {
-                line = line.push(config_line(t, scale));
-            }
-            Some(NavBadge::Dot(tint)) => {
-                line = line.push(status_dot(tint, scale));
-            }
-            None => {}
+        let badge: Option<Element<'_, Message>> = match self.badge_for(screen) {
+            Some(NavBadge::Text(t)) => Some(config_line(t, scale).into()),
+            Some(NavBadge::Dot(tint)) => Some(status_dot(tint, scale)),
+            None => None,
+        };
+        hyprforge_ui::widgets::NavItem {
+            label: screen.title().to_string(),
+            mark: Some(hyprforge_ui::glyph::page(screen.glyph(), scale.apply(NAV_MARK_BASE), mark_color)),
+            badge,
+            selected,
+            on_press: Message::Navigate(screen),
         }
-        // Centred in a fill-height container: a button's content sits at
-        // its top, and at a fixed row height that put every label above
-        // the middle of its own highlight.
-        iced::widget::button(container(line).center_y(Length::Fill))
-            .width(Length::Fill)
-            .height(Length::Fixed(density::row_height(scale) + spacing::XS))
-            .padding([0.0, spacing::SM + 2.0])
-            .style(move |t: &Theme, status| selectable_row_style(t, status, selected))
-            .on_press(Message::Navigate(screen))
-            .into()
     }
 
     /// The one keyboard grammar used across the whole app (vision pillar

@@ -82,6 +82,7 @@ pub enum Message {
     NightLightToggled(bool),
     PowerToggled(bool),
     DisplaysToggled(bool),
+    PressureToggled(bool),
     /// Fired continuously while the slider is being dragged. Updates only
     /// [`TrayModule::offset_draft`] — see its own doc comment for why
     /// this does not write anything.
@@ -163,6 +164,10 @@ impl SettingsModule for TrayModule {
                 self.write(|p| p.displays = shown);
                 Task::none()
             }
+            Message::PressureToggled(shown) => {
+                self.write(|p| p.pressure = shown);
+                Task::none()
+            }
             Message::OffsetChanged(value) => {
                 self.offset_draft = value;
                 Task::none()
@@ -202,11 +207,11 @@ impl SettingsModule for TrayModule {
 }
 
 impl TrayModule {
-    /// The six icon toggles, one group — mirrors the "Show in tray"
+    /// The seven icon toggles, one group — mirrors the "Show in tray"
     /// switch Network and Bluetooth each already carry for their own
-    /// icon, gathered here alongside the four that have no such switch
+    /// icon, gathered here alongside the five that have no such switch
     /// anywhere else (keep-awake, night light, battery and power profile,
-    /// and display layouts).
+    /// display layouts, and pressure).
     fn icons_section(&self, scale: FontScale) -> Element<'_, Message> {
         let rows: Vec<Element<'_, Message>> = match &self.tray_prefs {
             Ok(prefs) => [
@@ -216,6 +221,7 @@ impl TrayModule {
                 (prefs.night_light, "Night light", Message::NightLightToggled),
                 (prefs.power, "Battery and power profile", Message::PowerToggled),
                 (prefs.displays, "Display layouts", Message::DisplaysToggled),
+                (prefs.pressure, "Pressure (what the machine is waiting on)", Message::PressureToggled),
             ]
             .into_iter()
             .enumerate()
@@ -431,6 +437,16 @@ mod tests {
             assert!(prefs.bluetooth, "untouched icon keeps its value");
             assert!(!prefs.night_light, "untouched icon keeps its value");
             assert!(!prefs.power, "untouched icon keeps its value");
+        });
+    }
+
+    #[test]
+    fn the_pressure_toggle_writes_only_its_own_field() {
+        with_temp_config(|_dir| {
+            let (mut m, _task) = TrayModule::new();
+            let _ = m.update(Message::PressureToggled(true));
+            let on_disk = hyprforge_tray::prefs::load().unwrap();
+            assert_eq!(on_disk, Prefs { pressure: true, ..Prefs::default() });
         });
     }
 

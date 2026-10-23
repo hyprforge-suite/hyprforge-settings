@@ -821,19 +821,28 @@ impl WindowRulesModule {
         Task::none()
     }
 
-    fn commit_draft(&mut self) {
+    /// Writes the draft into the list; `false` when it was refused, so the
+    /// caller has nothing to save.
+    fn commit_draft(&mut self) -> bool {
         let Some(draft) = self.draft.take() else {
-            return;
+            return false;
         };
+        // An index outside the list is refused, never written over whatever
+        // sits there now — `reload_store` keeps it current, this is the
+        // backstop.
+        if draft.editing_index.is_some_and(|i| i >= self.rules.len()) {
+            self.error = Some("Not saved — the rule being edited is no longer in the list.".into());
+            return false;
+        }
         // Taken before the draft is consumed, and by the same rule the
         // preview used, so what the user was shown is what gets written.
         let name = self.name_for(&draft);
         let editing_index = draft.editing_index;
         let (matcher, effects) = draft.into_matcher_effects();
-        match editing_index {
-            Some(i) => {
-                self.rules[i].matcher = matcher;
-                self.rules[i].effects = effects;
+        match editing_index.and_then(|i| self.rules.get_mut(i)) {
+            Some(rule) => {
+                rule.matcher = matcher;
+                rule.effects = effects;
             }
             None => {
                 self.rules.push(Rule {
@@ -844,13 +853,25 @@ impl WindowRulesModule {
                 });
             }
         }
+        true
     }
 
     /// Re-reads `window-rules.toml` after the Set up page changed it —
     /// notification blur adds layer rules, and a save from here writes
     /// the whole file from what was loaded. Unreadable stays unreadable:
     /// the lists empty and every save refused, as in `new`.
+    ///
+    /// An open edit is re-pointed at its rule by name: its `editing_index`
+    /// is a position in the list as it was, and left alone after a reload
+    /// that moved rules, Save wrote over a different rule (or indexed past
+    /// the end). A rule that is gone closes the editor.
     pub fn reload_store(&mut self) {
+        let editing = self
+            .draft
+            .as_ref()
+            .and_then(|d| d.editing_index)
+            .and_then(|i| self.rules.get(i))
+            .map(|r| r.name.clone());
         match hyprforge_windowrules::storage::load(&hyprforge_core::paths::window_rules_toml_path()) {
             Ok(stored) => {
                 self.rules = stored.rules;
@@ -866,6 +887,20 @@ impl WindowRulesModule {
             }
         }
         self.pending_delete = None;
+        if let Some(name) = editing {
+            match self.rules.iter().position(|r| r.name == name) {
+                Some(i) => {
+                    if let Some(d) = &mut self.draft {
+                        d.editing_index = Some(i);
+                    }
+                }
+                None => {
+                    self.draft = None;
+                    self.status =
+                        Some("The rule being edited was removed, so the edit was closed.".into());
+                }
+            }
+        }
     }
 
     /// Writes the canonical TOML, or reports why it couldn't.
@@ -1150,7 +1185,9 @@ impl SettingsModule for WindowRulesModule {
                 if self.draft.as_ref().is_some_and(|d| !d.blockers().is_empty()) {
                     return Task::none();
                 }
-                self.commit_draft();
+                if !self.commit_draft() {
+                    return Task::none();
+                }
                 self.save_and_maybe_reload()
             }
             Message::DraftCancel => {
@@ -1588,8 +1625,9 @@ impl WindowRulesModule {
     /// name is emitted in the generated line, so a preview showing a
     /// different one would be wrong.
     fn name_for(&self, draft: &RuleDraft) -> String {
-        if let Some(i) = draft.editing_index {
-            return self.rules[i].name.clone();
+        // `get`, not `[i]`: this runs from `view`.
+        if let Some(rule) = draft.editing_index.and_then(|i| self.rules.get(i)) {
+            return rule.name.clone();
         }
         let label = if !draft.class.trim().is_empty() {
             draft.class.trim()
@@ -2444,7 +2482,7 @@ mod tests {
             assert!(preview.contains("float = true"), "got: {preview}");
             assert!(preview.contains("name = [[hyprforge-discord-1]]"), "got: {preview}");
 
-            m.commit_draft();
+            assert!(m.commit_draft());
             assert_eq!(hyprforge_windowrules::codegen::render_one(&m.rules[0]), preview);
         });
     }
@@ -2698,6 +2736,42 @@ mod tests {
     /// Setup writes the notification blur as layer rules into the same
     /// `window-rules.toml` this page saves whole. A page that dropped
     /// what it does not edit would delete them on its first save.
+    /// The same stale-index trap as the Keyboard page's editor: a reload
+    /// under an open edit must re-point it at its rule by name, and close
+    /// it if the rule is gone, never leave it indexing the old list.
+    #[test]
+    fn an_open_edit_follows_its_rule_across_a_reload() {
+        crate::modules::with_temp_env(|_| {
+            let path = hyprforge_core::paths::window_rules_toml_path();
+            let rule = |name: &str| Rule {
+                name: name.into(),
+                enabled: true,
+                matcher: Default::default(),
+                effects: Default::default(),
+            };
+            let mut m = WindowRulesModule::new().0;
+            m.rules = vec![rule("a"), rule("b")];
+            m.draft = Some(RuleDraft::from_rule(1, &m.rules[1]));
+
+            let save = |rules: Vec<Rule>| {
+                hyprforge_windowrules::storage::save(
+                    &path,
+                    &hyprforge_windowrules::storage::Rules { rules, ..Default::default() },
+                )
+                .unwrap()
+            };
+            save(vec![rule("b")]);
+            m.reload_store();
+            let draft = m.draft.as_ref().expect("its rule is still there");
+            assert_eq!(draft.editing_index, Some(0));
+            assert_eq!(m.name_for(draft), "b");
+
+            save(vec![rule("a")]);
+            m.reload_store();
+            assert!(m.draft.is_none(), "an edit of a rule that is gone is closed");
+        });
+    }
+
     #[test]
     fn a_save_from_this_page_keeps_the_layer_rules_setup_added() {
         crate::modules::with_temp_env(|_| {

@@ -152,7 +152,13 @@ impl SessionModule {
     /// `GTK_USE_PORTAL` item adds an environment variable, and a save
     /// from here writes the whole file from what was loaded. Unreadable
     /// refuses every save, as in `new`.
+    ///
+    /// Drafts are keyed on a row's position, and Set up's Undo removes a
+    /// row from the middle of a list, so each draft is moved to wherever
+    /// its row is now and dropped if the row is gone. Keeping them as they
+    /// were put a half-typed value onto whichever row slid into the slot.
     pub fn reload_store(&mut self) {
+        let before = std::mem::take(&mut self.stored);
         match hyprforge_session::storage::load(&session_toml()) {
             Ok(stored) => {
                 self.stored = stored;
@@ -161,6 +167,34 @@ impl SessionModule {
             Err(e) => {
                 self.stored = Session::default();
                 self.store_unreadable = Some(e.to_string());
+            }
+        }
+        let drafts = std::mem::take(&mut self.drafts);
+        for ((index, field), value) in drafts {
+            let moved = match field.tab() {
+                Tab::Autostart => follow(
+                    &before.autostart.programs,
+                    &self.stored.autostart.programs,
+                    index,
+                ),
+                Tab::Environment => follow(
+                    &before.environment.variables,
+                    &self.stored.environment.variables,
+                    index,
+                ),
+                Tab::Gestures => follow(
+                    &before.gestures.gestures,
+                    &self.stored.gestures.gestures,
+                    index,
+                ),
+                Tab::Permissions => follow(
+                    &before.permissions.rules,
+                    &self.stored.permissions.rules,
+                    index,
+                ),
+            };
+            if let Some(index) = moved {
+                self.drafts.insert((index, field), value);
             }
         }
     }
@@ -938,6 +972,16 @@ mod gesture_reading {
     }
 }
 
+/// Where row `index` of `before` is in `after`: the same position if it
+/// is still there, else the first equal row, else nowhere.
+fn follow<T: PartialEq>(before: &[T], after: &[T], index: usize) -> Option<usize> {
+    let row = before.get(index)?;
+    if after.get(index) == Some(row) {
+        return Some(index);
+    }
+    after.iter().position(|r| r == row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1088,6 +1132,36 @@ mod tests {
                 m.drafts.get(&(1, Field::Command)).map(String::as_str),
                 Some("third")
             );
+        });
+    }
+
+    /// Set up's Undo rewrites session.toml under a half-typed edit. The
+    /// draft is keyed on a row's position, so after a reload it follows its
+    /// row — and a row that is gone takes its draft with it, rather than
+    /// the draft landing on whatever slid into that position.
+    #[test]
+    fn a_reload_moves_each_draft_with_its_row() {
+        with_temp_config(|m| {
+            let var = |name: &str| environment::Variable {
+                name: name.into(),
+                value: "1".into(),
+                enabled: true,
+            };
+            m.stored.environment.variables = vec![var("GONE"), var("STAYS")];
+            let _ = m.update(Message::Changed(0, Field::Value, "for gone".into()));
+            let _ = m.update(Message::Changed(1, Field::Value, "for stays".into()));
+
+            let mut on_disk = Session::default();
+            on_disk.environment.variables = vec![var("STAYS")];
+            hyprforge_session::storage::save(&session_toml(), &on_disk).unwrap();
+            m.reload_store();
+
+            assert_eq!(
+                m.drafts.get(&(0, Field::Value)).map(String::as_str),
+                Some("for stays"),
+                "the surviving row's draft follows it"
+            );
+            assert_eq!(m.drafts.len(), 1, "the removed row's draft goes with it");
         });
     }
 

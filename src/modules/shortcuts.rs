@@ -580,7 +580,20 @@ impl ShortcutsModule {
     /// `new`: an unreadable file leaves the list empty *and* refuses to
     /// save. An armed Delete is disarmed, because the row it pointed at
     /// may have moved.
+    ///
+    /// An open edit is re-pointed at its bind by name for the same reason:
+    /// its `editing_index` is a position in the list as it was, and Set
+    /// up's Undo removes binds from the middle of it. Left alone, Save
+    /// overwrote whichever bind had slid into that slot, or the preview
+    /// indexed past the end and took the app down. A bind that is gone
+    /// closes the editor — there is nothing left for it to edit.
     pub fn reload_store(&mut self) {
+        let editing = self
+            .draft
+            .as_ref()
+            .and_then(|d| d.editing_index)
+            .and_then(|i| self.shortcuts.get(i))
+            .map(|s| s.name.clone());
         match hyprforge_shortcuts::storage::load(&hyprforge_core::paths::shortcuts_toml_path()) {
             Ok(shortcuts) => {
                 self.shortcuts = shortcuts;
@@ -592,6 +605,20 @@ impl ShortcutsModule {
             }
         }
         self.pending_delete = None;
+        if let Some(name) = editing {
+            match self.shortcuts.iter().position(|s| s.name == name) {
+                Some(i) => {
+                    if let Some(d) = &mut self.draft {
+                        d.editing_index = Some(i);
+                    }
+                }
+                None => {
+                    self.set_draft(None);
+                    self.status =
+                        Some("The shortcut being edited was removed, so the edit was closed.".into());
+                }
+            }
+        }
     }
 
     /// Replaces whatever is being edited, invalidating every conflict check
@@ -731,15 +758,30 @@ impl ShortcutsModule {
         )
     }
 
-    fn commit_draft(&mut self) {
+    /// Writes the draft into the list; `false` when it was refused, so the
+    /// caller has nothing to save.
+    fn commit_draft(&mut self) -> bool {
         let Some(draft) = self.draft.take() else {
-            return;
+            return false;
         };
+        // An index that is not in the list is refused, never written:
+        // `reload_store` keeps it current, and if anything ever gets past
+        // that, writing over whatever now sits there (or panicking) is worse
+        // than losing the edit.
+        if let Some(i) = draft.editing_index {
+            if i >= self.shortcuts.len() {
+                self.error = Some(
+                    "Not saved — the shortcut being edited is no longer in the list.".into(),
+                );
+                return false;
+            }
+        }
         let name = self.name_for(&draft);
-        match draft.editing_index {
-            Some(i) => self.shortcuts[i] = draft.into_shortcut(name),
+        match draft.editing_index.and_then(|i| self.shortcuts.get_mut(i)) {
+            Some(slot) => *slot = draft.into_shortcut(name),
             None => self.shortcuts.push(draft.into_shortcut(name)),
         }
+        true
     }
 
     /// The name this draft will be stored under — its existing one when
@@ -749,8 +791,10 @@ impl ShortcutsModule {
     /// because the name is visible in the generated line (it's the fallback
     /// description) and a preview that shows a different one is wrong.
     fn name_for(&self, draft: &ShortcutDraft) -> String {
-        if let Some(i) = draft.editing_index {
-            return self.shortcuts[i].name.clone();
+        // `get`, not `[i]`: this runs from `view`, and an index left
+        // stale by a reload must not take the app down while drawing.
+        if let Some(existing) = draft.editing_index.and_then(|i| self.shortcuts.get(i)) {
+            return existing.name.clone();
         }
         let label = if draft.description.trim().is_empty() {
             draft.key.trim()
@@ -1047,7 +1091,9 @@ impl SettingsModule for ShortcutsModule {
                     // rather than stalling behind a check that can never
                     // complete (vision pillar #3: no dead ends).
                     Ok(_) | Err(_) => {
-                        self.commit_draft();
+                        if !self.commit_draft() {
+                            return Task::none();
+                        }
                         self.save_and_maybe_reload()
                     }
                 }
@@ -2127,7 +2173,7 @@ mod tests {
         assert!(preview.contains("description = [[hyprforge: hyprforge-p-1]]"), "got: {preview}");
 
         // ...and that is the name it actually gets on save.
-        module.commit_draft();
+        assert!(module.commit_draft());
         assert_eq!(module.shortcuts[0].name, "hyprforge-p-1");
         assert_eq!(codegen::render_one(&module.shortcuts[0]), preview);
     }
@@ -2574,5 +2620,68 @@ mod tests {
         };
         assert!(review.shortcuts[0].already_imported);
         assert!(!review.shortcuts[0].checked);
+    }
+
+    /// Set up's Undo rewrites shortcuts.toml under an open editor. The
+    /// draft's index points into the list as it was, so after a reload it
+    /// has to follow its bind by name — or Save overwrites a different one.
+    #[test]
+    fn an_open_edit_follows_its_bind_when_the_store_is_reloaded() {
+        crate::modules::with_temp_env(|_dir| {
+            let a = shortcut_with("a", Action::with_params("window.close", BTreeMap::new()));
+            let b = shortcut_with("b", Action::with_params("window.close", BTreeMap::new()));
+            let mut module = test_module();
+            module.shortcuts = vec![a, b.clone()];
+            module.set_draft(Some(ShortcutDraft::from_shortcut(1, &b)));
+
+            hyprforge_shortcuts::storage::save(
+                &hyprforge_core::paths::shortcuts_toml_path(),
+                std::slice::from_ref(&b),
+            )
+            .unwrap();
+            module.reload_store();
+
+            let draft = module.draft.as_ref().expect("its bind is still there");
+            assert_eq!(draft.editing_index, Some(0));
+            assert_eq!(module.name_for(draft), b.name);
+        });
+    }
+
+    /// And when the bind it was editing is gone, the edit goes with it,
+    /// rather than indexing past the end of the list on the next frame.
+    #[test]
+    fn an_open_edit_of_a_bind_that_was_removed_is_closed_on_reload() {
+        crate::modules::with_temp_env(|_dir| {
+            let a = shortcut_with("a", Action::with_params("window.close", BTreeMap::new()));
+            let b = shortcut_with("b", Action::with_params("window.close", BTreeMap::new()));
+            let mut module = test_module();
+            module.shortcuts = vec![a.clone(), b.clone()];
+            module.set_draft(Some(ShortcutDraft::from_shortcut(1, &b)));
+
+            hyprforge_shortcuts::storage::save(
+                &hyprforge_core::paths::shortcuts_toml_path(),
+                std::slice::from_ref(&a),
+            )
+            .unwrap();
+            module.reload_store();
+
+            assert!(module.draft.is_none(), "an edit of nothing must not survive");
+            assert!(module.status.is_some() || module.error.is_some(), "the user is told why");
+        });
+    }
+
+    /// A draft whose index no longer exists must never be committed over
+    /// whatever sits there now, nor panic the preview.
+    #[test]
+    fn a_draft_pointing_past_the_list_is_refused_not_written() {
+        let a = shortcut_with("a", Action::with_params("window.close", BTreeMap::new()));
+        let b = shortcut_with("b", Action::with_params("window.close", BTreeMap::new()));
+        let mut module = test_module();
+        module.shortcuts = vec![a.clone()];
+        let draft = ShortcutDraft::from_shortcut(1, &b);
+        let _ = module.name_for(&draft);
+        module.draft = Some(draft);
+        assert!(!module.commit_draft(), "refused");
+        assert_eq!(module.shortcuts, vec![a]);
     }
 }

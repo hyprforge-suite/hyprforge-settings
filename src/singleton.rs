@@ -59,13 +59,26 @@ extern "C" {
 /// place a compositor's own sockets live, and specific to this user.
 const LOCK_FILE_NAME: &str = "hyprforge-settings.lock";
 
-/// Where the lock file lives: `$XDG_RUNTIME_DIR` when it is set (every
-/// real session has one), falling back to the system temp directory
-/// only so this never panics on a machine with neither — a fallback
-/// that is never actually exercised outside a broken environment.
+/// Where the lock file lives: in `$XDG_RUNTIME_DIR` (every real session
+/// has one).
+///
+/// Without one — unset, empty, or not absolute — this is an empty path,
+/// which [`acquire`] refuses with `Err`, and the caller's `Err` path opens
+/// the window without a lock. It used to fall back to the system temp
+/// directory, where any other user could create and hold
+/// `hyprforge-settings.lock` and keep this user's Settings shut for
+/// good, and an empty variable put the lock in the working directory.
+/// Two windows in a broken environment is the better failure.
 pub fn lock_path() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join(LOCK_FILE_NAME)
+    lock_path_in(std::env::var_os("XDG_RUNTIME_DIR"))
+}
+
+/// [`lock_path`], given the variable's value — the seam its test uses.
+fn lock_path_in(runtime_dir: Option<std::ffi::OsString>) -> PathBuf {
+    match runtime_dir.map(PathBuf::from) {
+        Some(dir) if dir.is_absolute() => dir.join(LOCK_FILE_NAME),
+        _ => PathBuf::new(),
+    }
 }
 
 /// Holds the exclusive lock for as long as this value lives. Dropping it
@@ -86,6 +99,14 @@ pub struct Lock(#[allow(dead_code)] File);
 /// as "couldn't check, so don't block on it", never as a reason to refuse
 /// to open: a broken lock must never lock out every future window.
 pub fn acquire(path: &Path) -> io::Result<Option<Lock>> {
+    // An absolute path or nothing: a relative one is relative to wherever
+    // Settings was started, which is no lock at all. See `lock_path`.
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no runtime directory to hold the single-instance lock",
+        ));
+    }
     // `truncate(false)`: the lock's meaning is entirely in the flock
     // state, never the file's contents (there are none), so there is
     // nothing to preserve or discard either way — explicit so this
@@ -161,6 +182,23 @@ mod tests {
         let b = acquire(&dir.path().join("b.lock")).unwrap();
         assert!(a.is_some());
         assert!(b.is_some());
+    }
+
+    /// Without a usable runtime directory there is no private place for
+    /// the lock. A shared `/tmp` would let another user hold it and keep
+    /// this user's Settings from ever opening, and an empty variable put
+    /// it in whatever directory Settings was started from — so there is
+    /// no lock at all, and the caller's `Err` path opens the window anyway.
+    #[test]
+    fn without_a_runtime_directory_there_is_no_lock_to_take() {
+        for runtime in [None, Some(""), Some("relative/dir")] {
+            let path = lock_path_in(runtime.map(std::ffi::OsString::from));
+            assert!(acquire(&path).is_err(), "{runtime:?} gave {}", path.display());
+        }
+        assert_eq!(
+            lock_path_in(Some("/run/user/1000".into())),
+            Path::new("/run/user/1000").join(LOCK_FILE_NAME)
+        );
     }
 
     /// A directory that does not exist cannot be opened for the lock

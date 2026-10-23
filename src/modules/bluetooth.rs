@@ -184,6 +184,19 @@ pub struct BluetoothModule<B: BluetoothBackend + 'static> {
 }
 
 impl<B: BluetoothBackend + 'static> BluetoothModule<B> {
+    /// Closes the dialog for `device`'s pairing, if one is open, and
+    /// refuses it if it was a question. Refusing, never accepting: the
+    /// pairing this prompt belonged to is already over.
+    fn close_prompt_for(&mut self, device: &Address) {
+        if self.pairing.as_ref().is_some_and(|p| p.device() == device) {
+            if let Some(prompt) = self.pairing.take() {
+                if prompt.needs_an_answer() {
+                    answer_pairing(prompt.device(), false);
+                }
+            }
+        }
+    }
+
     /// Builds the module around an already-usable backend and kicks off
     /// the first load.
     ///
@@ -445,10 +458,9 @@ impl<B: BluetoothBackend + 'static> SettingsModule for BluetoothModule<B> {
                 }
                 // BlueZ would not report success while still waiting on
                 // an answer, so whatever prompt was open for this device
-                // is resolved now.
-                if self.pairing.as_ref().is_some_and(|p| p.device() == &address) {
-                    self.pairing = None;
-                }
+                // is over now — but the relay is still holding it, so it
+                // is answered (no) rather than just closed. See `relay`.
+                self.close_prompt_for(&address);
                 self.refresh_task()
             }
             Message::Paired(address, Err(e)) => {
@@ -458,9 +470,7 @@ impl<B: BluetoothBackend + 'static> SettingsModule for BluetoothModule<B> {
                 // conversation that's already over would be asking the
                 // user to answer a question BlueZ has stopped listening
                 // for.
-                if self.pairing.as_ref().is_some_and(|p| p.device() == &address) {
-                    self.pairing = None;
-                }
+                self.close_prompt_for(&address);
                 Task::none()
             }
             Message::PairingPrompted(prompt) => {
@@ -472,8 +482,9 @@ impl<B: BluetoothBackend + 'static> SettingsModule for BluetoothModule<B> {
                 // started by `PairPressed` does not complete until the
                 // conversation does, and `Message::Paired` is what
                 // updates the row afterwards.
-                answer_pairing(true);
-                self.pairing = None;
+                if let Some(prompt) = self.pairing.take() {
+                    answer_pairing(prompt.device(), true);
+                }
                 Task::none()
             }
             Message::PairingCancelled => {
@@ -483,7 +494,7 @@ impl<B: BluetoothBackend + 'static> SettingsModule for BluetoothModule<B> {
                 // Answer first, then cancel. BlueZ is waiting on the
                 // agent's reply, and `CancelPairing` on a conversation
                 // that is still blocked on us is the slower way round.
-                answer_pairing(false);
+                answer_pairing(prompt.device(), false);
                 let backend = Arc::clone(&self.backend);
                 let address = prompt.device().clone();
                 Task::perform(
@@ -840,17 +851,30 @@ fn passkey_digits(passkey: &Passkey) -> String {
 /// request itself: the prompt is plain data any test can build, and a
 /// request's constructor is private to `hyprforge-bluetooth`. Keeping the
 /// message testable is worth one process-global sender.
-static PAIRING_ANSWERS: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<bool>> =
-    std::sync::OnceLock::new();
+///
+/// Replaced on every registration, not set once. It was a `OnceLock`, so
+/// after bluetoothd restarted the new relay's channel had no sender at
+/// all, its `recv` returned `None` at once, and every prompt from then on
+/// was refused before the user saw it.
+///
+/// Each answer names its device, so [`relay`] can tell a late click for
+/// a dialog that has gone from an answer to the prompt it holds.
+static PAIRING_ANSWERS: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<(Address, bool)>>> =
+    std::sync::Mutex::new(None);
+
+/// Points [`answer_pairing`] at a freshly registered agent's relay.
+fn install_answers(tx: tokio::sync::mpsc::UnboundedSender<(Address, bool)>) {
+    *PAIRING_ANSWERS.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+}
 
 /// Answers the pairing conversation currently in flight, if any.
 ///
 /// A no-op when nothing is listening — which is the case in every test in
 /// this module, and is why the dialog's own behaviour can be asserted
 /// without a bus.
-fn answer_pairing(accept: bool) {
-    if let Some(tx) = PAIRING_ANSWERS.get() {
-        let _ = tx.send(accept);
+fn answer_pairing(device: &Address, accept: bool) {
+    if let Some(tx) = PAIRING_ANSWERS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send((device.clone(), accept));
     }
 }
 
@@ -877,7 +901,6 @@ fn pairing_stream() -> impl iced::futures::Stream<Item = Message> {
 async fn forward_pairing(
     output: &mut iced::futures::channel::mpsc::Sender<Message>,
 ) -> anyhow::Result<()> {
-    use iced::futures::SinkExt;
 
     let connection = zbus::Connection::system().await?;
     let (_handle, mut prompts) = hyprforge_bluetooth::agent::register(&connection)
@@ -885,26 +908,88 @@ async fn forward_pairing(
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let (answers_tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
-    // Only the first registration wins; a retry after a dropped
-    // connection reuses the sender the screen already holds.
-    let _ = PAIRING_ANSWERS.set(answers_tx);
+    install_answers(answers_tx);
+    relay(&mut prompts, &mut answers, output).await
+}
 
-    while let Some(request) = prompts.recv().await {
-        // Discard anything answered for a prompt that has already gone —
-        // one that timed out inside the agent, say. Without this, a click
-        // that arrived too late for its own dialog would silently answer
-        // the *next* pairing, which is the one failure here that must
-        // never happen quietly.
-        while answers.try_recv().is_ok() {}
+/// One pending pairing question: what to show, and the way to answer it.
+/// A trait so [`relay`] can be driven by a test — a real
+/// `PairingRequest`'s constructor is private to `hyprforge-bluetooth`.
+trait Pending: Send {
+    fn prompt(&self) -> &PairingPrompt;
+    fn accept(self);
+    fn reject(self);
+}
 
-        output.send(Message::PairingPrompted(request.prompt.clone())).await?;
+impl Pending for hyprforge_bluetooth::agent::PairingRequest {
+    fn prompt(&self) -> &PairingPrompt {
+        &self.prompt
+    }
+    fn accept(self) {
+        hyprforge_bluetooth::agent::PairingRequest::accept(self)
+    }
+    fn reject(self) {
+        hyprforge_bluetooth::agent::PairingRequest::reject(self)
+    }
+}
 
-        match answers.recv().await {
-            Some(true) => request.accept(),
-            // A closed channel means the screen is gone. Reject: an
-            // unanswered pairing left hanging is worse than a refused one.
-            Some(false) | None => request.reject(),
+/// Shows each prompt and hands the screen's answer back to it.
+///
+/// Waits on prompts and answers *together*, never on one answer at a
+/// time. It used to take a prompt and then block until an answer came,
+/// which went wrong in two ordinary ways: a `Display` prompt (a keyboard's
+/// "type these digits") has no answer at all, and a pairing that ended
+/// on its own — BlueZ cancelled it, it failed — closed its dialog without
+/// one. Either way the relay sat waiting, every later prompt queued
+/// unseen, and the agent's own timeout rejected each of them two minutes
+/// on. Pairing was broken until Settings restarted.
+///
+/// So: a prompt with nothing to answer is shown and let go; a new prompt
+/// that does need an answer supersedes one still open, which is refused
+/// (BlueZ asks one thing at a time, so an open one is already over); and
+/// an answer is matched to the open prompt by device, so a click meant
+/// for a dialog that has gone answers nothing rather than whatever came
+/// next. Nothing here ever accepts without the screen saying yes for that
+/// device.
+async fn relay<R: Pending>(
+    prompts: &mut tokio::sync::mpsc::UnboundedReceiver<R>,
+    answers: &mut tokio::sync::mpsc::UnboundedReceiver<(Address, bool)>,
+    output: &mut iced::futures::channel::mpsc::Sender<Message>,
+) -> anyhow::Result<()> {
+    use iced::futures::SinkExt;
+    let mut open: Option<R> = None;
+    loop {
+        tokio::select! {
+            request = prompts.recv() => {
+                let Some(request) = request else { break };
+                if request.prompt().needs_an_answer() {
+                    if let Some(superseded) = open.take() {
+                        superseded.reject();
+                    }
+                    // Anything still queued was meant for a dialog that
+                    // is gone, and must not reach this one.
+                    while answers.try_recv().is_ok() {}
+                }
+                output.send(Message::PairingPrompted(request.prompt().clone())).await?;
+                if request.prompt().needs_an_answer() {
+                    open = Some(request);
+                }
+            }
+            answer = answers.recv() => {
+                // `None`: this relay's sender was replaced by a newer
+                // registration's, so this one is finished.
+                let Some((device, accept)) = answer else { break };
+                if open.as_ref().is_some_and(|r| r.prompt().device() == &device) {
+                    if let Some(request) = open.take() {
+                        if accept { request.accept() } else { request.reject() }
+                    }
+                }
+            }
         }
+    }
+    // An unanswered pairing left hanging is worse than a refused one.
+    if let Some(request) = open {
+        request.reject();
     }
     Ok(())
 }
@@ -1485,5 +1570,165 @@ mod tests {
             entered: 3,
         }));
         let _ = m.view(scale); // Display
+    }
+
+    // --- the pairing relay ------------------------------------------------
+
+    /// A stand-in for `PairingRequest`, recording how it was answered.
+    struct FakeRequest {
+        prompt: PairingPrompt,
+        answered: tokio::sync::oneshot::Sender<bool>,
+    }
+
+    impl Pending for FakeRequest {
+        fn prompt(&self) -> &PairingPrompt {
+            &self.prompt
+        }
+        fn accept(self) {
+            let _ = self.answered.send(true);
+        }
+        fn reject(self) {
+            let _ = self.answered.send(false);
+        }
+    }
+
+    fn fake(prompt: PairingPrompt) -> (FakeRequest, tokio::sync::oneshot::Receiver<bool>) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (FakeRequest { prompt, answered: tx }, rx)
+    }
+
+    fn confirm(addr: &str) -> PairingPrompt {
+        PairingPrompt::Confirm {
+            device: Address::new(addr),
+            name: "Phone".into(),
+            passkey: Passkey::new(1),
+        }
+    }
+
+    struct Rig {
+        prompts: tokio::sync::mpsc::UnboundedSender<FakeRequest>,
+        answers: tokio::sync::mpsc::UnboundedSender<(Address, bool)>,
+        shown: iced::futures::channel::mpsc::Receiver<Message>,
+    }
+
+    fn rig() -> Rig {
+        let (prompts, mut prompts_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (answers, mut answers_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut out, shown) = iced::futures::channel::mpsc::channel(16);
+        tokio::spawn(async move {
+            let _ = relay(&mut prompts_rx, &mut answers_rx, &mut out).await;
+        });
+        Rig { prompts, answers, shown }
+    }
+
+    async fn next_shown(rig: &mut Rig) -> Option<PairingPrompt> {
+        use iced::futures::StreamExt;
+        match tokio::time::timeout(Duration::from_secs(2), rig.shown.next()).await {
+            Ok(Some(Message::PairingPrompted(p))) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// A keyboard's "type these digits" prompt has no answer. Waiting for
+    /// one stalled the relay, so every later prompt queued unseen and was
+    /// rejected by the agent's timeout two minutes on.
+    #[tokio::test]
+    async fn a_display_prompt_does_not_hold_up_the_next_one() {
+        let mut rig = rig();
+        let (display, _) = fake(PairingPrompt::Display {
+            device: Address::new("AA:00:00:00:00:01"),
+            name: "Keyboard".into(),
+            passkey: Passkey::new(7),
+            entered: 0,
+        });
+        rig.prompts.send(display).unwrap();
+        assert!(next_shown(&mut rig).await.is_some());
+
+        let (next, answered) = fake(confirm("AA:00:00:00:00:02"));
+        rig.prompts.send(next).unwrap();
+        assert!(next_shown(&mut rig).await.is_some(), "the next prompt must be shown");
+        rig.answers.send((Address::new("AA:00:00:00:00:02"), true)).unwrap();
+        assert_eq!(answered.await, Ok(true));
+    }
+
+    /// A prompt whose pairing ended without an answer — BlueZ cancelled
+    /// it, it failed — must not keep the relay waiting. The next prompt
+    /// supersedes it, and the abandoned one is refused, never accepted.
+    #[tokio::test]
+    async fn an_unanswered_prompt_is_refused_when_the_next_one_arrives() {
+        let mut rig = rig();
+        let (first, first_answered) = fake(confirm("AA:00:00:00:00:03"));
+        rig.prompts.send(first).unwrap();
+        assert!(next_shown(&mut rig).await.is_some());
+
+        let (second, second_answered) = fake(confirm("AA:00:00:00:00:04"));
+        rig.prompts.send(second).unwrap();
+        assert!(next_shown(&mut rig).await.is_some(), "the second prompt must be shown");
+        assert_eq!(first_answered.await, Ok(false), "the abandoned one is refused");
+
+        rig.answers.send((Address::new("AA:00:00:00:00:04"), true)).unwrap();
+        assert_eq!(second_answered.await, Ok(true));
+    }
+
+    /// An answer names its device, so a click meant for a dialog that has
+    /// gone can never answer a different device's pairing.
+    #[tokio::test]
+    async fn an_answer_for_another_device_answers_nothing() {
+        let mut rig = rig();
+        let (request, mut answered) = fake(confirm("AA:00:00:00:00:05"));
+        rig.prompts.send(request).unwrap();
+        assert!(next_shown(&mut rig).await.is_some());
+
+        rig.answers.send((Address::new("AA:00:00:00:00:99"), true)).unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(answered.try_recv().is_err(), "nothing may answer it yet");
+        rig.answers.send((Address::new("AA:00:00:00:00:05"), false)).unwrap();
+        assert_eq!(answered.await, Ok(false));
+    }
+
+    /// Serialises the tests that install a sender in the process-global
+    /// answer slot.
+    static ANSWER_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A relay that restarted (bluetoothd went away and came back) must
+    /// receive the screen's answers. The slot used to be set once, so the
+    /// second relay's channel had no sender and refused everything.
+    #[test]
+    fn answers_reach_the_most_recently_registered_relay() {
+        let _slot = ANSWER_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        let addr = Address::new("AA:00:00:00:00:06");
+        let (first, _first_rx) = tokio::sync::mpsc::unbounded_channel();
+        install_answers(first);
+        let (second, mut second_rx) = tokio::sync::mpsc::unbounded_channel();
+        install_answers(second);
+
+        answer_pairing(&addr, true);
+        let got = std::iter::from_fn(|| second_rx.try_recv().ok()).find(|(a, _)| *a == addr);
+        assert_eq!(got, Some((addr, true)));
+    }
+
+    /// A pairing that ends while its prompt is open answers it — with a
+    /// no — rather than just closing the dialog and leaving the relay
+    /// waiting on a question nobody can see.
+    #[test]
+    fn a_pairing_that_ends_with_its_prompt_open_answers_it_no() {
+        let _slot = ANSWER_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        install_answers(tx);
+        let (mut m, _backend) = module();
+        for (addr, result) in [
+            ("AA:00:00:00:00:07", Ok(())),
+            ("AA:00:00:00:00:08", Err(LoadError::from(BluetoothError::Refused("no".into())))),
+        ] {
+            let addr = Address::new(addr);
+            let _ = m.update(Message::PairingPrompted(PairingPrompt::Confirm {
+                device: addr.clone(),
+                name: "Phone".into(),
+                passkey: Passkey::new(2),
+            }));
+            let _ = m.update(Message::Paired(addr.clone(), result));
+            let got = std::iter::from_fn(|| rx.try_recv().ok()).find(|(a, _)| *a == addr);
+            assert_eq!(got, Some((addr, false)), "the open prompt must be answered, and never yes");
+        }
     }
 }

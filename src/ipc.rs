@@ -74,13 +74,18 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// How long a connection may sit idle (no complete request line) before
 /// this process gives up on it and closes it.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The longest request line read before the connection is dropped. Every
+/// real request is a few dozen bytes; without a cap, a client that never
+/// sends a newline grows the buffer until the idle timeout.
+const MAX_LINE: u64 = 64 * 1024;
 
 /// How long a second invocation waits for the running instance to answer
 /// before giving up. Short: the user is waiting on this as a menu click,
@@ -364,8 +369,16 @@ async fn handle_connection(stream: UnixStream, screens: UnboundedSender<Signal>)
 
     loop {
         line.clear();
-        let read = tokio::time::timeout(IDLE_TIMEOUT, reader.read_line(&mut line)).await;
+        // Through `take`, so one line can never be more than `MAX_LINE`
+        // bytes of memory. A full-length read with no newline at the end
+        // is a request no client of ours sends: drop the connection.
+        let read =
+            tokio::time::timeout(IDLE_TIMEOUT, (&mut reader).take(MAX_LINE).read_line(&mut line)).await;
         let n = match read {
+            Ok(Ok(n)) if n as u64 >= MAX_LINE && !line.ends_with('\n') => {
+                tracing::debug!("settings control request too long; closing");
+                return;
+            }
             Ok(Ok(n)) => n,
             Ok(Err(_)) => return, // read error: client gone
             Err(_) => {
@@ -495,6 +508,30 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(value["ok"], true);
         assert_eq!(rx.recv().await, Some(Signal::FocusOnly));
+    }
+
+    /// A line with no end must not be read into memory without one. The
+    /// connection is closed once a request passes any size a real one
+    /// could be, instead of buffering until the idle timeout.
+    #[tokio::test]
+    async fn an_endless_line_closes_the_connection() {
+        use tokio::io::AsyncReadExt;
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let socket_path = tmpdir.path().join("settings-test.sock");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let path_for_server = socket_path.clone();
+        tokio::spawn(async move {
+            let _ = run_at(&path_for_server, tx).await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let stream = UnixStream::connect(&socket_path).await.unwrap();
+        let (mut reader, mut writer) = stream.into_split();
+        // Ignored: the server may close mid-write, which is the point.
+        let _ = writer.write_all(&vec![b'x'; MAX_LINE as usize * 2]).await;
+        let mut buf = Vec::new();
+        let closed = tokio::time::timeout(Duration::from_secs(5), reader.read_to_end(&mut buf)).await;
+        assert!(closed.is_ok(), "the server kept reading an unbounded line");
     }
 
     #[tokio::test]

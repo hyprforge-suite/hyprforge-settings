@@ -80,7 +80,7 @@ pub fn republish_if_stale() -> bool {
 }
 
 /// Where the downscaled copy lives. Derived, and regenerated whenever
-/// the original is newer.
+/// the source it was made from changes (see `source_marker`).
 fn scaled_wallpaper_path() -> PathBuf {
     hyprforge_paths::hyprforge_config_dir().join("lock-wallpaper.png")
 }
@@ -108,17 +108,28 @@ fn scale_into(original: &Path, scaled: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    // Skip the work when the copy is already current. Comparing mtimes
-    // rather than hashing: this runs on a settings save, and reading 36
-    // megapixels to decide whether to read 36 megapixels is silly.
-    let up_to_date = || -> Option<bool> {
-        let source = std::fs::metadata(original).ok()?.modified().ok()?;
-        let derived = std::fs::metadata(scaled).ok()?.modified().ok()?;
-        Some(derived >= source)
-    };
-    if up_to_date().unwrap_or(false) {
+    // Skip the work when the copy is already current. Comparing a
+    // recorded identity rather than hashing: this runs on a settings
+    // save, and reading 36 megapixels to decide whether to read 36
+    // megapixels is silly.
+    //
+    // The identity is the source's path, size and mtime, kept in a
+    // sidecar beside the copy — not "the copy is newer than the source".
+    // The copy has one fixed name whatever it was made from, so that test
+    // called last week's copy current for any *older* wallpaper the user
+    // switched to, and the lock screen kept the previous picture.
+    let marker = source_marker(scaled);
+    let identity = source_identity(original);
+    if identity.is_some()
+        && scaled.exists()
+        && std::fs::read_to_string(&marker).ok() == identity
+    {
         return Some(scaled.to_path_buf());
     }
+    // Gone before the copy is replaced: a crash between the rename below
+    // and the new marker must leave no marker at all, never one naming a
+    // different source than the copy beside it.
+    let _ = std::fs::remove_file(&marker);
 
     let image = image::ImageReader::open(original).ok()?.with_guessed_format().ok()?;
     let image = image.decode().ok()?;
@@ -155,12 +166,39 @@ fn scale_into(original: &Path, scaled: &Path) -> Option<PathBuf> {
         let _ = std::fs::remove_file(&tmp);
         return None;
     }
+    // Only after the copy is in place. Failing to write it costs a
+    // re-scale next time, nothing more.
+    if let Some(identity) = identity {
+        let _ = hyprforge_paths::write_atomic(&marker, &identity);
+    }
     tracing::debug!(
         from = %format!("{width}x{height}"),
         to = %format!("{}x{}", resized.width(), resized.height()),
         "scaled the wallpaper for the auth screens"
     );
     Some(scaled.to_path_buf())
+}
+
+/// Where the record of what `scaled` was made from lives.
+fn source_marker(scaled: &Path) -> PathBuf {
+    let mut name = scaled.as_os_str().to_owned();
+    name.push(".source");
+    PathBuf::from(name)
+}
+
+/// What identifies the source a copy was made from: its path, size and
+/// modification time, one per line. `None` when it cannot be read, which
+/// never matches a marker and so always re-scales.
+fn source_identity(original: &Path) -> Option<String> {
+    let meta = std::fs::metadata(original).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let path = std::fs::canonicalize(original).unwrap_or_else(|_| original.to_path_buf());
+    Some(format!("{}\n{}\n{mtime}\n", path.display(), meta.len()))
 }
 
 /// Whether `original` is too large for the auth screens to decode
@@ -310,6 +348,30 @@ mod tests {
             first,
             "the copy was rewritten even though the original had not changed"
         );
+    }
+
+    /// The copy has one fixed name whatever it was made from, so "newer
+    /// than the source" cannot be the whole freshness test: switching to
+    /// an *older* oversized wallpaper found last week's copy newer than it
+    /// and kept showing the previous picture on the lock screen.
+    #[test]
+    fn switching_to_an_older_wallpaper_replaces_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let older = dir.path().join("older.png");
+        let newer = dir.path().join("newer.png");
+        image::RgbaImage::from_pixel(5000, 1200, image::Rgba([200, 0, 0, 255]))
+            .save(&older)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        image::RgbaImage::from_pixel(5000, 1200, image::Rgba([0, 0, 200, 255]))
+            .save(&newer)
+            .unwrap();
+        let scaled = dir.path().join("lock-wallpaper.png");
+
+        scale_into(&newer, &scaled).unwrap();
+        scale_into(&older, &scaled).unwrap();
+        let pixel = *image::open(&scaled).unwrap().to_rgba8().get_pixel(0, 0);
+        assert_eq!(pixel, image::Rgba([200, 0, 0, 255]), "still the previous wallpaper");
     }
 }
 

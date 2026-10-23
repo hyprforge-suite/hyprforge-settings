@@ -26,9 +26,48 @@ pub mod window_rules;
 /// they differ only in which recorded calls they then care about.
 pub async fn evaluate_user_config() -> hyprforge_lua_import::ImportResult {
     let hypr_dir = hyprforge_core::paths::hypr_config_dir();
-    tokio::task::spawn_blocking(move || hyprforge_lua_import::evaluate(&hypr_dir))
-        .await
-        .unwrap_or_default()
+    let config = hypr_dir.join("hyprland.lua");
+    bounded_evaluation(
+        move || hyprforge_lua_import::evaluate(&hypr_dir),
+        config,
+        EVALUATION_TIMEOUT,
+    )
+    .await
+}
+
+/// How long an import may take before it is reported as stuck. A real
+/// config evaluates in milliseconds.
+const EVALUATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Runs `evaluate` on the blocking pool, giving up after `limit`.
+///
+/// Without the bound, a config the evaluator never finishes (a `require`
+/// of something that blocks on open, say) left every import screen on
+/// "Reading your config…" for good. Giving up does not stop the thread —
+/// a blocking call cannot be cancelled from outside, so it stays stuck
+/// until it returns, if ever; bounding that is the evaluator's job. What
+/// this guarantees is that the screen hears about it.
+///
+/// Neither a timeout nor a panic is "nothing to import": both come back
+/// as a failure against `config`, which the import review lists, rather
+/// than as an empty result that looks like a config with nothing in it.
+async fn bounded_evaluation(
+    evaluate: impl FnOnce() -> hyprforge_lua_import::ImportResult + Send + 'static,
+    config: std::path::PathBuf,
+    limit: std::time::Duration,
+) -> hyprforge_lua_import::ImportResult {
+    let reason = match tokio::time::timeout(limit, tokio::task::spawn_blocking(evaluate)).await {
+        Ok(Ok(result)) => return result,
+        Ok(Err(e)) => format!("reading it stopped unexpectedly ({e})"),
+        Err(_) => format!(
+            "reading it took longer than {} seconds, so it was abandoned",
+            limit.as_secs()
+        ),
+    };
+    hyprforge_lua_import::ImportResult {
+        calls: Vec::new(),
+        failures: vec![(config, reason)],
+    }
 }
 
 /// One lock for every test that repoints `$XDG_CONFIG_HOME`.
@@ -93,5 +132,42 @@ unsafe fn restore(name: &str, previous: Option<std::ffi::OsString>) {
     match previous {
         Some(value) => unsafe { std::env::set_var(name, value) },
         None => unsafe { std::env::remove_var(name) },
+    }
+}
+
+#[cfg(test)]
+mod evaluation_tests {
+    use super::*;
+
+    /// An evaluation that never finishes must still end the import, as a
+    /// reported failure — never a screen left waiting for ever.
+    #[tokio::test]
+    async fn an_evaluation_that_never_finishes_is_reported_not_waited_on() {
+        let result = bounded_evaluation(
+            || {
+                // Long against the limit, short enough that the test
+                // runtime's wait for this thread on shutdown stays cheap.
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                hyprforge_lua_import::ImportResult::default()
+            },
+            "/cfg/hyprland.lua".into(),
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+        assert!(result.calls.is_empty());
+        assert_eq!(result.failures.len(), 1, "the user must be told it was abandoned");
+    }
+
+    /// A panic inside the evaluator is a failure to report, not an empty
+    /// config.
+    #[tokio::test]
+    async fn an_evaluation_that_panics_is_reported_not_shown_as_empty() {
+        let result = bounded_evaluation(
+            || panic!("evaluator bug"),
+            "/cfg/hyprland.lua".into(),
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(result.failures.len(), 1);
     }
 }

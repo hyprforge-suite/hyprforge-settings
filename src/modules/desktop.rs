@@ -297,7 +297,13 @@ pub struct DesktopModule {
     /// the `source =` line installed *first*, so a crash anywhere in
     /// between leaves the user with a config that is duplicated but
     /// working, rather than one that is retired and missing.
-    pending_retire: Option<(PathBuf, Vec<(usize, usize)>)>,
+    ///
+    /// Keyed on the tab whose save adopted them, and consumed only by
+    /// *that* tab's `Applied`. Any success used to do: an adopt whose own
+    /// save failed, followed by an unrelated Night light apply, commented
+    /// out hypridle listeners that had no replacement anywhere. A failed
+    /// save or a failed apply of the same tab drops it.
+    pending_retire: Option<(Tab, PathBuf, Vec<(usize, usize)>)>,
     /// The on-disk `tray.toml`, loaded once at construction. Same shape
     /// and same reasoning as `network::NetworkModule::tray_prefs`: kept as
     /// the whole [`TrayPrefs`] (not just `night_light`/`keep_awake`) so a
@@ -384,7 +390,8 @@ impl DesktopModule {
     /// ordering rule that exists because doing it the other way round
     /// cost a real user 37 hand-written binds.
     fn save(&mut self, tab: Tab) -> Task<Message> {
-        if let Some(reason) = &self.store_unreadable {
+        if let Some(reason) = self.store_unreadable.clone() {
+            self.forget_retire(tab);
             self.error = Some(format!(
                 "Not saving — a settings file couldn't be read, and overwriting \
                  it would lose whatever is in it. ({reason})"
@@ -409,6 +416,7 @@ impl DesktopModule {
         }
         if let Err(e) = result {
             self.error = Some(e.to_string());
+            self.forget_retire(tab);
             return Task::none();
         }
         self.status = None;
@@ -448,6 +456,14 @@ impl DesktopModule {
         }
     }
 
+    /// Drops a retire this tab's save was carrying, because that save will
+    /// never report success. Another tab's pending retire is left alone.
+    fn forget_retire(&mut self, tab: Tab) {
+        if self.pending_retire.as_ref().is_some_and(|(t, _, _)| *t == tab) {
+            self.pending_retire = None;
+        }
+    }
+
     /// Which of the daemons' own config files this tab adopts from.
     fn daemon_config_path(tab: Tab) -> PathBuf {
         let hypr = hyprforge_core::paths::hypr_config_dir();
@@ -467,10 +483,18 @@ impl DesktopModule {
     /// the user wrote. Following them would re-import the app's own
     /// output, the same self-import trap the Lua flows avoid by skipping
     /// `hypr_hyprforge_dir()`.
-    fn read_daemon_config(&self) -> AdoptReview {
+    ///
+    /// A missing file is first run and reviews as empty. A file that is
+    /// there and will not read is an `Err`, never an empty review: "you
+    /// have nothing to import" would be a claim about a file nobody read.
+    fn read_daemon_config(&self) -> Result<AdoptReview, String> {
         let tab = self.tab;
         let path = Self::daemon_config_path(tab);
-        let contents = std::fs::read_to_string(&path).unwrap_or_default();
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(format!("Couldn't read {}: {e}", path.display())),
+        };
         let document = hyprforge_core::hyprlang::parse(&contents);
 
         let mut candidates = Vec::new();
@@ -539,7 +563,7 @@ impl DesktopModule {
             }
         }
         problems.sort_by_key(|(line, _)| *line);
-        AdoptReview { tab, path, candidates, problems }
+        Ok(AdoptReview { tab, path, candidates, problems })
     }
 
     /// Merges the ticked candidates into the store and saves.
@@ -581,7 +605,7 @@ impl DesktopModule {
             self.status = Some("Nothing was ticked, so nothing changed.".into());
             return Task::none();
         }
-        self.pending_retire = (!ranges.is_empty()).then_some((review.path, ranges));
+        self.pending_retire = (!ranges.is_empty()).then_some((tab, review.path, ranges));
         self.save(tab)
     }
 
@@ -968,9 +992,17 @@ impl SettingsModule for DesktopModule {
                 Task::none()
             }
             Message::AdoptOpen => {
-                self.adopt = Some(self.read_daemon_config());
-                self.error = None;
                 self.status = None;
+                match self.read_daemon_config() {
+                    Ok(review) => {
+                        self.adopt = Some(review);
+                        self.error = None;
+                    }
+                    Err(e) => {
+                        self.adopt = None;
+                        self.error = Some(e);
+                    }
+                }
                 Task::none()
             }
             Message::AdoptToggle(index, checked) => {
@@ -987,30 +1019,32 @@ impl SettingsModule for DesktopModule {
             }
             Message::AdoptConfirm => self.adopt_confirmed(),
             Message::NightLightTrayToggled(shown) => {
-                let Ok(prefs) = &self.tray_prefs else {
+                if self.tray_prefs.is_err() {
                     // `night_light_tray_row` renders no checkbox while
                     // `tray_prefs` is `Err`, so a stray message here still
                     // must not turn an unreadable file into a freshly
                     // written default — the exact overwrite this field
                     // exists to prevent.
                     return Task::none();
-                };
-                let mut updated = *prefs;
-                updated.night_light = shown;
-                match hyprforge_tray::prefs::save(&updated) {
-                    Ok(()) => self.tray_prefs = Ok(updated),
+                }
+                // Read-modify-write, never a save of `tray_prefs`: that copy is
+                // from when this page was built, and the Network, Bluetooth
+                // and Tray pages write this file too. Saving it put their
+                // changes back — `prefs::update` reloads first and touches
+                // only this one field.
+                match hyprforge_tray::prefs::update(|p| p.night_light = shown) {
+                    Ok(updated) => self.tray_prefs = Ok(updated),
                     Err(e) => self.error = Some(e.to_string()),
                 }
                 Task::none()
             }
             Message::KeepAwakeTrayToggled(shown) => {
-                let Ok(prefs) = &self.tray_prefs else {
+                if self.tray_prefs.is_err() {
                     return Task::none();
-                };
-                let mut updated = *prefs;
-                updated.keep_awake = shown;
-                match hyprforge_tray::prefs::save(&updated) {
-                    Ok(()) => self.tray_prefs = Ok(updated),
+                }
+                // `prefs::update`, for the reason on `NightLightTrayToggled`.
+                match hyprforge_tray::prefs::update(|p| p.keep_awake = shown) {
+                    Ok(updated) => self.tray_prefs = Ok(updated),
                     Err(e) => self.error = Some(e.to_string()),
                 }
                 Task::none()
@@ -1021,8 +1055,10 @@ impl SettingsModule for DesktopModule {
                 // produced and the `source =` line installed. Retiring
                 // before this point would stand the user's own settings
                 // down in favour of a file that might not exist.
-                if let Some((path, ranges)) = self.pending_retire.take() {
-                    self.retire_adopted(&path, &ranges);
+                if self.pending_retire.as_ref().is_some_and(|(t, _, _)| *t == tab) {
+                    if let Some((_, path, ranges)) = self.pending_retire.take() {
+                        self.retire_adopted(&path, &ranges);
+                    }
                 }
                 self.idle_needs_restart =
                     tab == Tab::Idle && applied == Applied::NeedsRestart;
@@ -1079,7 +1115,10 @@ impl SettingsModule for DesktopModule {
                 }
                 Task::none()
             }
-            Message::Applied(_, Err(e)) => {
+            Message::Applied(tab, Err(e)) => {
+                // The adopted settings never reached the daemon, so the
+                // originals are still the only copy that works.
+                self.forget_retire(tab);
                 self.status = None;
                 self.error = Some(e);
                 Task::none()
@@ -2052,6 +2091,104 @@ listener {
             let after = hyprforge_core::hyprlang::parse(&std::fs::read_to_string(&path).unwrap());
             assert_eq!(after.blocks("listener").count(), 0, "the originals must be stood down");
             assert_eq!(after.blocks("general").count(), 0);
+        });
+    }
+
+    /// A retire belongs to the save that adopted it. Another tab's save
+    /// finishing first — a Night light apply already in flight — says
+    /// nothing about whether the idle settings reached anywhere, so it
+    /// must not stand the user's hypridle.conf down.
+    #[test]
+    fn another_tabs_apply_never_retires_what_this_tab_adopted() {
+        with_temp_config(|m| {
+            let path = write_hypridle(FIVE_LISTENERS);
+            std::fs::write(path.with_extension("conf.hyprforge.bak"), FIVE_LISTENERS).unwrap();
+            m.tab = Tab::Idle;
+            let _ = m.update(Message::AdoptOpen);
+            let _ = m.update(Message::AdoptConfirm);
+
+            let _ = m.update(Message::Applied(Tab::NightLight, Ok(Applied::Live)));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), FIVE_LISTENERS);
+
+            let _ = m.update(Message::Applied(Tab::Idle, Ok(Applied::NeedsRestart)));
+            let after = hyprforge_core::hyprlang::parse(&std::fs::read_to_string(&path).unwrap());
+            assert_eq!(after.blocks("listener").count(), 0, "its own apply still retires");
+        });
+    }
+
+    /// An adopting save the daemon refused leaves the originals as the
+    /// only copy that works. A later, unrelated success must not find a
+    /// retire still waiting and comment them out.
+    #[test]
+    fn a_failed_adopting_apply_forgets_its_retire() {
+        with_temp_config(|m| {
+            let path = write_hypridle(FIVE_LISTENERS);
+            std::fs::write(path.with_extension("conf.hyprforge.bak"), FIVE_LISTENERS).unwrap();
+            m.tab = Tab::Idle;
+            let _ = m.update(Message::AdoptOpen);
+            let _ = m.update(Message::AdoptConfirm);
+            let _ = m.update(Message::Applied(Tab::Idle, Err("refused".into())));
+            assert!(m.pending_retire.is_none());
+
+            let _ = m.update(Message::Applied(Tab::Idle, Ok(Applied::NeedsRestart)));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), FIVE_LISTENERS);
+        });
+    }
+
+    /// A save that never ran has nothing to retire in favour of.
+    #[test]
+    fn an_adopting_save_that_is_refused_forgets_its_retire() {
+        with_temp_config(|m| {
+            let path = write_hypridle(FIVE_LISTENERS);
+            std::fs::write(path.with_extension("conf.hyprforge.bak"), FIVE_LISTENERS).unwrap();
+            m.tab = Tab::Idle;
+            let _ = m.update(Message::AdoptOpen);
+            m.store_unreadable = Some("sunset.toml would not parse".into());
+            let _ = m.update(Message::AdoptConfirm);
+            assert!(m.pending_retire.is_none(), "nothing was saved, so nothing may retire");
+        });
+    }
+
+    /// A hypridle.conf that exists and cannot be read is not an empty
+    /// one: "nothing to import" would be a claim about a file nobody read.
+    #[test]
+    fn an_unreadable_daemon_config_is_reported_not_shown_as_empty() {
+        with_temp_config(|m| {
+            let path = DesktopModule::daemon_config_path(Tab::Idle);
+            // A directory where the file should be: read_to_string fails
+            // with something other than NotFound, whoever runs the test.
+            std::fs::create_dir_all(&path).unwrap();
+            m.tab = Tab::Idle;
+            let _ = m.update(Message::AdoptOpen);
+            assert!(m.adopt.is_none(), "no review of a file that wasn't read");
+            assert!(m.error.is_some(), "the user must be told");
+        });
+    }
+
+    /// tray.toml has a writer on every page that shows a tray toggle. This
+    /// page's copy is loaded once at construction, so a save built from it
+    /// would put back whatever the other pages changed since.
+    #[test]
+    fn a_tray_toggle_here_keeps_what_other_pages_wrote_since() {
+        with_temp_config(|m| {
+            hyprforge_tray::prefs::update(|p| p.network = false).unwrap();
+            let _ = m.update(Message::NightLightTrayToggled(true));
+            let _ = m.update(Message::KeepAwakeTrayToggled(true));
+
+            let on_disk = hyprforge_tray::prefs::load().unwrap();
+            assert!(!on_disk.network, "the Network page's write must survive");
+            assert!(on_disk.night_light && on_disk.keep_awake, "this page's writes land");
+        });
+    }
+
+    /// A missing hypridle.conf is first run: an empty review, not an error.
+    #[test]
+    fn a_missing_daemon_config_is_an_empty_review() {
+        with_temp_config(|m| {
+            m.tab = Tab::Idle;
+            let _ = m.update(Message::AdoptOpen);
+            assert!(m.error.is_none());
+            assert!(m.adopt.as_ref().is_some_and(|r| r.candidates.is_empty()));
         });
     }
 

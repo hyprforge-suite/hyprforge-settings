@@ -303,7 +303,7 @@ pub struct DesktopModule {
     /// save failed, followed by an unrelated Night light apply, commented
     /// out hypridle listeners that had no replacement anywhere. A failed
     /// save or a failed apply of the same tab drops it.
-    pending_retire: Option<(Tab, PathBuf, Vec<(usize, usize)>)>,
+    pending_retire: Option<PendingRetire>,
     /// The on-disk `tray.toml`, loaded once at construction. Same shape
     /// and same reasoning as `network::NetworkModule::tray_prefs`: kept as
     /// the whole [`TrayPrefs`] (not just `night_light`/`keep_awake`) so a
@@ -312,6 +312,10 @@ pub struct DesktopModule {
     /// at all rather than guessing a value.
     tray_prefs: Result<TrayPrefs, String>,
 }
+
+/// The tab whose save adopted them, the daemon config, and the line
+/// ranges to comment out there — see `DesktopModule::pending_retire`.
+type PendingRetire = (Tab, PathBuf, Vec<(usize, usize)>);
 
 impl DesktopModule {
     pub fn new() -> (Self, Task<Message>) {

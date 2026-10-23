@@ -446,6 +446,10 @@ struct ImportCandidate {
     /// design — see `remove_matched_lines`), so it comes back in every
     /// subsequent import.
     already_imported: bool,
+    /// Options on the original call this store has no field for (or that
+    /// held a value of the wrong type). Non-empty means the regenerated
+    /// bind would behave differently from the one it replaces.
+    dropped: Vec<String>,
     /// Where the original call came from — kept so a checked-and-added
     /// candidate's hand-written source line can be removed after a
     /// successful import.
@@ -462,8 +466,12 @@ impl ImportCandidate {
     /// raw editor), but they must never be treated as a completed import:
     /// codegen skips an empty action, so removing the original line would
     /// delete a working bind and put nothing back.
+    ///
+    /// Also false when an option was dropped: a bind that was `submap =
+    /// "resize"` and comes back without it would fire everywhere, so the
+    /// original stays and stays in charge.
     fn is_complete(&self) -> bool {
-        !self.action.is_empty()
+        !self.action.is_empty() && self.dropped.is_empty()
     }
 }
 
@@ -1148,9 +1156,10 @@ impl SettingsModule for ShortcutsModule {
                             self.shortcuts.iter().any(|s| s.combo == imported.combo);
                         // Pre-checked only when importing it is
                         // unambiguously the right thing: anything already
-                        // stored, or whose action couldn't be read, is left
-                        // for the user to opt into.
-                        let checked = !already_imported && !imported.action.is_empty();
+                        // stored, whose action couldn't be read, or that
+                        // lost an option on the way in, is left for the user
+                        // to opt into.
+                        let checked = !already_imported && imported.is_complete();
                         shortcuts.push(ImportCandidate {
                             combo: imported.combo,
                             action: imported.action,
@@ -1158,6 +1167,7 @@ impl SettingsModule for ShortcutsModule {
                             flags: imported.flags,
                             checked,
                             already_imported,
+                            dropped: imported.dropped,
                             source_path: call.source_path.clone(),
                             line: call.line,
                         });
@@ -1492,7 +1502,14 @@ impl ShortcutsModule {
                 } else {
                     candidate.description.clone()
                 };
-                let detail = if !candidate.is_complete() {
+                let detail = if !candidate.action.is_empty() && !candidate.dropped.is_empty() {
+                    format!(
+                        "{}  →  uses {} which Hyprforge can't keep. Importing this \
+                         stores the rest; your original line stays put.",
+                        candidate.combo.to_bind_string(),
+                        candidate.dropped.join(", ")
+                    )
+                } else if !candidate.is_complete() {
                     format!(
                         "{}  →  (action not recoverable — bound to something other than \
                          hl.dsp.*). Importing this keeps the keys and description as a \
@@ -2515,6 +2532,41 @@ mod tests {
             std::fs::read_to_string(&config).unwrap(),
             source,
             "the hand-written bind must survive an import that can't replace it"
+        );
+    }
+
+    /// An option the store can't carry — `submap` here — would be lost
+    /// from the regenerated bind, which then fires outside its submap.
+    /// The original line has to stay, and the bind must not be ticked.
+    #[test]
+    fn a_bind_that_loses_an_option_never_costs_the_user_their_original_line() {
+        let _env = TempConfig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("hyprland.lua");
+        let source =
+            "hl.bind([[SUPER + R]], hl.dsp.window.close(), { submap = \"resize\" })\n";
+        std::fs::write(&config, source).unwrap();
+
+        let mut module = test_module();
+        let call = recorded_bind(source, &config, 1);
+        let _ = module.update(Message::ImportEvaluated(hyprforge_lua_import::ImportResult {
+            calls: vec![call],
+            failures: Vec::new(),
+        }));
+
+        let Some(ImportState::Ready(review)) = &module.import_review else {
+            panic!("the review should be ready");
+        };
+        assert_eq!(review.shortcuts.len(), 1);
+        assert!(!review.shortcuts[0].is_complete());
+        assert!(!review.shortcuts[0].checked, "a bind that lost an option must not be pre-checked");
+
+        let _ = module.update(Message::ImportToggle(0, true));
+        let _ = module.update(Message::ImportConfirm);
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            source,
+            "the hand-written bind must survive an import that can't carry all of it"
         );
     }
 

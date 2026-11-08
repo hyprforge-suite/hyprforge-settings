@@ -1973,3 +1973,85 @@ mod revert_prompt_tests {
         assert_eq!(revert_lines(&changes[..2]).len(), 2, "nothing added under the limit");
     }
 }
+
+#[cfg(test)]
+mod render {
+    //! Draws every screen to `$SHOTS/settings-<screen>.png`, from a copy of
+    //! this user's own Hyprland and Hyprforge config in a temporary
+    //! directory — Settings' modules write config as they start (their
+    //! `require` lines), and a render must never touch the real files.
+    //! A tool, not a check (the suite's `manual` tier).
+    //!
+    //! For layout and colour only. What `App::new` loads in the
+    //! background — the desktop theme's values, what Hyprland reports
+    //! live — arrives as a `Task` this does not run, so those rows draw
+    //! empty here ("Not available on this desktop") and never in the app.
+
+    use super::*;
+    use iced::{Color, Rectangle};
+    use iced_runtime::core::renderer::Style;
+    use iced_runtime::user_interface::{Cache, UserInterface};
+
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        let Ok(entries) = std::fs::read_dir(from) else { return };
+        let _ = std::fs::create_dir_all(to);
+        for e in entries.flatten() {
+            let target = to.join(e.file_name());
+            match e.file_type() {
+                Ok(t) if t.is_dir() => copy_dir(&e.path(), &target),
+                Ok(t) if t.is_file() => {
+                    let _ = std::fs::copy(e.path(), &target);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual: draws every screen to $SHOTS; a tool, never run automatically"]
+    fn render_every_screen() {
+        let Ok(shots) = std::env::var("SHOTS") else {
+            eprintln!("HYPRFORGE-SKIP: render_every_screen draws only with $SHOTS set");
+            return;
+        };
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        crate::modules::with_temp_env(|dir| {
+            copy_dir(&home.join(".config/hypr"), &dir.join("hypr"));
+            copy_dir(&home.join(".config/hyprforge"), &dir.join("hyprforge"));
+            // dconf too: gsettings reads `$XDG_CONFIG_HOME/dconf/user`, and
+            // `resolve` takes the fonts from it — without the copy the
+            // render is in the fallback font.
+            copy_dir(&home.join(".config/dconf"), &dir.join("dconf"));
+            hyprforge_ui::theme::init(hyprforge_appearance::look::resolve());
+            let (mut app, _) = App::new();
+            let screens = [
+                Screen::Monitors, Screen::Power, Screen::Input, Screen::DefaultApps, Screen::Network, Screen::Bluetooth,
+                Screen::WindowsWorkspaces, Screen::Shortcuts, Screen::Animations, Screen::WindowRules, Screen::Idle,
+                Screen::Session, Screen::System, Screen::Appearance, Screen::Wallpaper, Screen::NightLight, Screen::Sharing,
+                Screen::Tray, Screen::Setup,
+            ];
+            for screen in screens {
+                app.screen = screen;
+                let (w, h, scale) = (1280.0f32, 800.0f32, 1.6f32);
+                let (pw, ph) = ((w * scale) as u32, (h * scale) as u32);
+                let theme = hyprforge_ui::theme::active();
+                let font = iced::Font::with_name(Box::leak(theme.font.clone().into_boxed_str()));
+                let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(font, iced::Pixels(theme.font_size)));
+                let size = Size::new(w, h);
+                let mut ui = UserInterface::build(app.settings_view(), size, Cache::default(), &mut renderer);
+                ui.draw(&mut renderer, &app.theme(window::Id::unique()), &Style { text_color: Color::WHITE }, iced::mouse::Cursor::Unavailable);
+                let iced::Renderer::Secondary(mut skia) = renderer else { unreachable!() };
+                let mut pixmap = tiny_skia::Pixmap::new(pw, ph).unwrap();
+                let mut mask = tiny_skia::Mask::new(pw, ph).unwrap();
+                skia.draw(&mut pixmap.as_mut(), &mut mask, &iced_tiny_skia::graphics::Viewport::with_physical_size(Size::new(pw, ph), scale), &[Rectangle::with_size(size)], Color::BLACK);
+                // Drawn text borrows from the tree: only now may it go.
+                drop(ui);
+                for px in pixmap.data_mut().chunks_exact_mut(4) {
+                    px.swap(0, 2);
+                }
+                let name = format!("{screen:?}").to_lowercase();
+                pixmap.save_png(std::path::Path::new(&shots).join(format!("settings-{name}.png"))).unwrap();
+            }
+        });
+    }
+}

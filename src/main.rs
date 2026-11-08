@@ -251,8 +251,8 @@ fn main() -> iced::Result {
     // depends on the other — the app they are both part of does the
     // introduction.
     hyprforge_ui::theme::init(hyprforge_appearance::look::resolve());
-    // And bring the lock screen's copy of it up to date, off the thread
-    // that is about to draw: it may scale a wallpaper. See
+    // And bring the lock screen's and the greeter's copies of it up to date,
+    // off the thread that is about to draw: it may scale a wallpaper. See
     // `look::republish_if_stale`.
     let _ = std::thread::Builder::new().name("republish-look".into()).spawn(look::republish_if_stale);
 

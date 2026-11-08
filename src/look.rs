@@ -56,27 +56,89 @@ pub fn republish() {
 /// the lock screen and the greeter read a published copy instead (asking
 /// Hyprland before a lock can appear would put another process's answer
 /// in front of it), so without this they kept the look from the last
-/// save on the Appearance page. The greeter's copy still waits for that
-/// save — see the note on the write.
+/// save on the Appearance page. The greeter's copy is brought up to date
+/// too, but only from the user's own config — see [`may_export_on_start`].
 ///
-/// No test of its own: it is glue around `publish`, which writes the
-/// real paths and must never be run from a test. Returns whether it
-/// wrote.
+/// No test of its own: it is glue around writes to the real paths, which
+/// must never be run from a test; the decision it turns on is tested.
+/// Returns whether it wrote.
 pub fn republish_if_stale() -> bool {
     let mut theme = hyprforge_appearance::look::resolve();
     theme.wallpaper = wallpaper();
-    if hyprforge_look::Theme::load(&hyprforge_paths::lock_toml_path()).is_ok_and(|current| current == theme) {
+    let mut wrote = false;
+    if !hyprforge_look::Theme::load(&hyprforge_paths::lock_toml_path()).is_ok_and(|current| current == theme) {
+        if let Err(e) = theme.save(&hyprforge_paths::lock_toml_path()) {
+            tracing::warn!(error = %e, "couldn't bring the lock screen's look up to date");
+        }
+        wrote = true;
+    }
+
+    let dir = hyprforge_look::theme::export_dir();
+    let own = may_export_on_start(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+        std::env::var_os(hyprforge_look::theme::EXPORT_DIR_ENV).is_some_and(|v| !v.is_empty()),
+    );
+    // No directory is no greeter installed: nothing to bring up to date,
+    // and nothing to warn about on every start. (An explicit save still
+    // warns, through `publish` — there the user asked for the write.)
+    if own && dir.is_dir() {
+        let exported = hyprforge_look::Theme::load(&dir.join("theme.toml"));
+        if !exported.is_ok_and(|exported| same_look(&exported, &theme)) {
+            if let Err(e) = theme.export(&dir) {
+                tracing::warn!(error = %e, dir = %dir.display(), "couldn't bring the greeter's look up to date");
+            }
+            wrote = true;
+        }
+    }
+    wrote
+}
+
+/// Whether Settings, as it starts, may rewrite the greeter's export.
+///
+/// That export is a system directory this user can write, shared by the
+/// login screen, and Settings is often run by hand against an isolated
+/// `XDG_CONFIG_HOME` (CLAUDE.md asks for exactly that). A start that
+/// wrote from there put a test's look on the real login screen once,
+/// which is why the greeter used to follow only an explicit save — and
+/// so kept a border edited by hand in `hyprland.lua` until the next one.
+///
+/// So: yes when the export directory was named on purpose
+/// (`HYPRFORGE_GREET_DIR`, which is how a test points it at a scratch
+/// copy), or when the config in use is the user's own — the one
+/// `hyprforge_paths::config_home` falls back to, `$HOME/.config`. A run
+/// whose config is anywhere else is a test, or someone who keeps it
+/// elsewhere on purpose; either way an explicit save on Appearance still
+/// exports, and only the automatic write at start is held back.
+fn may_export_on_start(xdg: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>, export_dir_named: bool) -> bool {
+    if export_dir_named {
+        return true;
+    }
+    // Unset, empty or relative: `config_home` ignores it (a relative value
+    // is invalid per the XDG spec) and uses the default — the user's own.
+    let Some(xdg) = xdg.map(PathBuf::from).filter(|p| p.is_absolute()) else {
+        return true;
+    };
+    let Some(home) = home.map(PathBuf::from).filter(|p| p.is_absolute()) else {
+        // No `$HOME` to compare against: not provably the user's own.
         return false;
+    };
+    let default = home.join(".config");
+    // Canonical where both resolve, so `~/.config` through a symlink, or
+    // spelled with a trailing slash, is still recognised.
+    match (xdg.canonicalize(), default.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => xdg == default,
     }
-    // The lock screen's copy only, not the greeter's export: that one is
-    // a system directory this user can write, and Settings is run by hand
-    // against an isolated config, where doing this on every start would
-    // put a test's look on the real login screen — which happened once.
-    // The greeter's copy still follows an explicit save (`republish`).
-    if let Err(e) = theme.save(&hyprforge_paths::lock_toml_path()) {
-        tracing::warn!(error = %e, "couldn't bring the lock screen's look up to date");
-    }
-    true
+}
+
+/// Whether the greeter's export already shows `theme`. The export's
+/// wallpaper is its own copy, so its path never equals the original;
+/// whether there is one is what can be compared, and a changed wallpaper
+/// is exported by the save that changed it (`republish`, from Desktop).
+fn same_look(exported: &hyprforge_look::Theme, theme: &hyprforge_look::Theme) -> bool {
+    exported.wallpaper.is_some() == theme.wallpaper.is_some()
+        && hyprforge_look::Theme { wallpaper: None, ..exported.clone() } == hyprforge_look::Theme { wallpaper: None, ..theme.clone() }
 }
 
 /// Where the downscaled copy lives. Derived, and regenerated whenever
@@ -273,6 +335,75 @@ fn wallpaper() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn os(s: &str) -> Option<std::ffi::OsString> {
+        Some(s.into())
+    }
+
+    /// The login screen is shared and lives outside any config directory,
+    /// so a run of Settings against a scratch `XDG_CONFIG_HOME` must
+    /// never restyle it as it starts — that happened once.
+    #[test]
+    fn an_isolated_config_never_restyles_the_login_screen_on_start() {
+        let home = tempfile::tempdir().unwrap();
+        // Both exist, as on a real machine, so the comparison is the one
+        // between two directories that resolve — not a missing path.
+        std::fs::create_dir(home.path().join(".config")).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_str().unwrap();
+        assert!(!may_export_on_start(os(scratch.path().to_str().unwrap()), os(home_str), false));
+    }
+
+    /// The user's own config is the default location, however it is
+    /// spelled: unset, empty, relative (invalid, so ignored), or the same
+    /// directory named outright — through a symlink included.
+    #[test]
+    fn the_users_own_config_brings_the_login_screen_up_to_date() {
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join(".config");
+        std::fs::create_dir(&config).unwrap();
+        let link = home.path().join("cfg");
+        std::os::unix::fs::symlink(&config, &link).unwrap();
+        let home_str = home.path().to_str().unwrap();
+
+        assert!(may_export_on_start(None, os(home_str), false), "unset");
+        assert!(may_export_on_start(os(""), os(home_str), false), "empty");
+        assert!(may_export_on_start(os("relative/dir"), os(home_str), false), "relative");
+        assert!(may_export_on_start(os(config.to_str().unwrap()), os(home_str), false), "named outright");
+        assert!(may_export_on_start(os(&format!("{}/", config.display())), os(home_str), false), "trailing slash");
+        assert!(may_export_on_start(os(link.to_str().unwrap()), os(home_str), false), "through a symlink");
+    }
+
+    /// A test that names its own export directory may write it from any
+    /// config — that is how the suite's tests keep their hands off
+    /// `/var/lib/hyprforge/greet`.
+    #[test]
+    fn a_named_export_directory_may_always_be_written() {
+        let scratch = tempfile::tempdir().unwrap();
+        assert!(may_export_on_start(os(scratch.path().to_str().unwrap()), os("/home/nobody"), true));
+    }
+
+    /// With no `$HOME` there is nothing to show the config is the user's.
+    #[test]
+    fn without_a_home_a_named_config_is_not_the_users_own() {
+        assert!(!may_export_on_start(os("/somewhere"), None, false));
+    }
+
+    /// A border edited by hand changes the accent: that is a stale export.
+    /// The export's wallpaper is its own copy, so a different path there
+    /// is not.
+    #[test]
+    fn the_export_is_stale_when_the_colours_move_and_not_when_only_its_wallpaper_copy_differs() {
+        let theme = hyprforge_look::Theme { wallpaper: Some("/home/v/pic.png".into()), ..Default::default() };
+        let exported = hyprforge_look::Theme { wallpaper: Some("/var/lib/hyprforge/greet/wallpaper.png".into()), ..theme.clone() };
+        assert!(same_look(&exported, &theme));
+
+        let moved = hyprforge_look::Theme { accent: hyprforge_look::Color::from_argb_hex("ffff0000").unwrap(), ..theme.clone() };
+        assert!(!same_look(&exported, &moved));
+
+        let without = hyprforge_look::Theme { wallpaper: None, ..theme.clone() };
+        assert!(!same_look(&exported, &without));
+    }
 
     /// A photograph far larger than any screen must not reach the lock
     /// screen at full size. 36 megapixels peaks near 300MB in the one

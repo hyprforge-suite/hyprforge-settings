@@ -2032,6 +2032,11 @@ mod render {
             ];
             for screen in screens {
                 app.screen = screen;
+                // What a sidebar click does after setting the screen.
+                // Without it Appearance and Desktop draw whichever tab
+                // they were last told — every one of Desktop's pages
+                // rendered as Wallpaper.
+                app.open_tabs();
                 let (w, h, scale) = (1280.0f32, 800.0f32, 1.6f32);
                 let (pw, ph) = ((w * scale) as u32, (h * scale) as u32);
                 let theme = hyprforge_ui::theme::active();

@@ -232,6 +232,9 @@ pub enum Message {
     ListenerRemoved(usize),
     ListenerChanged(usize, Field, String),
     ListenerToggled(usize, Field, bool),
+    /// Drop a listener's second brightness save — the fix offered under
+    /// one `idle::Settings::second_saves` reports.
+    ListenerSecondSaveDropped(usize),
     // General
     GeneralCommandChanged(&'static str, String),
     InhibitToggled(&'static str, bool),
@@ -927,6 +930,16 @@ impl SettingsModule for DesktopModule {
                 self.drafts.insert((i, field), value);
                 Task::none()
             }
+            Message::ListenerSecondSaveDropped(i) => {
+                let Some(fixed) = self.idle.without_second_save(i) else {
+                    return Task::none();
+                };
+                self.idle = fixed;
+                // A draft of the old command would put the save back on
+                // the next Enter.
+                self.drafts.remove(&(i, Field::OnTimeout));
+                self.save(Tab::Idle)
+            }
             Message::ListenerToggled(i, field, on) => {
                 if let (Some(l), Field::IgnoreInhibit) = (self.idle.listeners.get_mut(i), field) {
                     l.ignore_inhibit = on;
@@ -1303,7 +1316,7 @@ impl DesktopModule {
             } else {
                 format!("Wallpaper {} \u{b7} {}", i + 1, entry.monitor)
             };
-            page = page.push(entry_block(title, Message::WallpaperRemoved(i), rows, problem, scale));
+            page = page.push(entry_block(title, Message::WallpaperRemoved(i), rows, problem, None, scale));
         }
 
         page = page.push(secondary_button("Add a wallpaper").on_press(Message::WallpaperAdded));
@@ -1629,7 +1642,7 @@ impl DesktopModule {
             ];
             let problem = problems.iter().find(|(index, _)| *index == i).map(|(_, p)| p.clone());
             let title = format!("From {}", if profile.time.trim().is_empty() { "…" } else { profile.time.trim() });
-            page = page.push(entry_block(title, Message::ProfileRemoved(i), rows, problem, scale));
+            page = page.push(entry_block(title, Message::ProfileRemoved(i), rows, problem, None, scale));
         }
 
         page.push(secondary_button("Add a time").on_press(Message::ProfileAdded)).into()
@@ -1660,6 +1673,7 @@ impl DesktopModule {
         }
 
         let problems = self.idle.invalid();
+        let second_saves = self.idle.second_saves();
         let mut timeouts = column![group_intro(
             "Idle timeouts",
             "Each entry waits for the screen to be idle, then runs a command. \
@@ -1715,9 +1729,19 @@ impl DesktopModule {
                     scale,
                 ),
             ];
-            let problem = problems.iter().find(|(index, _)| *index == i).map(|(_, p)| p.clone());
+            // A listener that will not be written says so first; a
+            // second save is only worth raising on one that will run.
+            let (problem, fix) = match problems.iter().find(|(index, _)| *index == i) {
+                Some((_, p)) => (Some(p.clone()), None),
+                None => match second_saves.iter().find(|(index, _)| *index == i) {
+                    Some((_, p)) => {
+                        (Some(p.clone()), Some(("Don't save it again", Message::ListenerSecondSaveDropped(i))))
+                    }
+                    None => (None, None),
+                },
+            };
             let title = format!("After {}s", listener.timeout);
-            timeouts = timeouts.push(entry_block(title, Message::ListenerRemoved(i), rows, problem, scale));
+            timeouts = timeouts.push(entry_block(title, Message::ListenerRemoved(i), rows, problem, fix, scale));
         }
         timeouts = timeouts.push(secondary_button("Add a timeout").on_press(Message::ListenerAdded));
         content = content.push(timeouts);
@@ -1776,6 +1800,7 @@ fn entry_block<'a>(
     remove: Message,
     rows: Vec<Element<'a, Message>>,
     problem: Option<String>,
+    fix: Option<(&'static str, Message)>,
     scale: FontScale,
 ) -> Element<'a, Message> {
     let mut block = column![
@@ -1790,7 +1815,17 @@ fn entry_block<'a>(
     ]
     .spacing(spacing::SM);
     if let Some(problem) = problem {
-        block = block.push(hint_text(problem, scale).color(hyprforge_ui::theme::warning()));
+        let warning = hint_text(problem, scale).color(hyprforge_ui::theme::warning());
+        block = block.push(match fix {
+            Some((label, message)) => row![
+                container(warning).width(Length::Fill),
+                secondary_button(label).on_press(message),
+            ]
+            .spacing(spacing::MD)
+            .align_y(iced::Alignment::Center)
+            .into(),
+            None => Element::from(warning),
+        });
     }
     block.into()
 }
@@ -2034,6 +2069,32 @@ listener {
     on-timeout = systemctl suspend
 }
 ";
+
+    /// The pair that left the user's screen dim after every long idle.
+    /// The fix is offered on the page and, taken, reaches `idle.toml`
+    /// with only the second save gone — and a draft of the old command
+    /// does not put it back.
+    #[test]
+    fn a_second_brightness_save_is_offered_its_fix_and_the_fix_is_saved() {
+        with_temp_config(|m| {
+            m.tab = Tab::Idle;
+            m.idle.listeners = vec![
+                idle::Listener { timeout: 150, on_timeout: "brightnessctl -s set 10".into(), ..Default::default() },
+                idle::Listener { timeout: 300, on_timeout: "brightnessctl -s set 0".into(), ..Default::default() },
+            ];
+            assert_eq!(m.idle.second_saves().len(), 1);
+            m.drafts.insert((1, Field::OnTimeout), "brightnessctl -s set 0".into());
+
+            let _ = m.update(Message::ListenerSecondSaveDropped(1));
+            assert_eq!(m.idle.listeners[1].on_timeout, "brightnessctl set 0");
+            assert_eq!(m.idle.listeners[0].on_timeout, "brightnessctl -s set 10");
+            assert!(!m.drafts.contains_key(&(1, Field::OnTimeout)));
+
+            let stored: idle::Settings = hyprforge_ecosystem::storage::load(&idle_toml()).unwrap();
+            assert_eq!(stored.listeners[1].on_timeout, "brightnessctl set 0");
+            assert!(stored.second_saves().is_empty());
+        });
+    }
 
     #[test]
     fn importing_finds_what_the_user_wrote_by_hand() {

@@ -1431,7 +1431,8 @@ impl SettingsModule for WindowRulesModule {
             rows.push(setting_row(
                 i,
                 summary,
-                Some(config_line(rule.name.clone(), scale).into()),
+                // The rule's name in the file, for whoever asked to see it.
+                crate::prefs::show_config_names().then(|| config_line(rule.name.clone(), scale).into()),
                 row![toggle(rule.enabled, scale).on_toggle(move |_| Message::ToggleEnabled(i)), actions]
                     .spacing(spacing::MD)
                     .align_y(iced::Alignment::Center),
@@ -2171,7 +2172,9 @@ impl WindowRulesModule {
             ));
         }
 
-        body = body.push(section("Writes", scale, self.preview_section(draft, scale)));
+        if crate::prefs::show_config_names() {
+            body = body.push(section("Writes", scale, self.preview_section(draft, scale)));
+        }
 
         // Disabled rather than hidden, with the reason shown above it: a
         // button that vanishes leaves no clue what's missing.

@@ -847,10 +847,13 @@ mod tests {
             if reloads.shortcuts {
                 keybinds.reload_store();
             }
-            // Any save from the page: toggling the user's own bind.
-            let _ = keybinds.update(ShortcutsMessage::ToggleEnabled(0));
+            // Any save from the page: deleting the user's own bind (the
+            // per-row toggle that used to do this lives in the editor now).
+            let _ = keybinds.update(ShortcutsMessage::Delete(0));
+            let _ = keybinds.update(ShortcutsMessage::DeleteConfirm(0));
             let stored = hyprforge_shortcuts::storage::load(&env.shortcuts_toml()).unwrap();
-            assert_eq!(stored.len(), 2, "{stored:#?}");
+            assert_eq!(stored.len(), 1, "{stored:#?}");
+            assert!(stored.iter().all(|s| s.name != "terminal"), "the delete was saved");
             assert!(stored.iter().any(|s| s.combo.key == "E"), "setup's Super+E was lost");
         });
     }

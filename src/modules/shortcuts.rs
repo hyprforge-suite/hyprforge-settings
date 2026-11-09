@@ -397,7 +397,6 @@ pub enum Message {
     Delete(usize),
     DeleteConfirm(usize),
     DeleteCancel,
-    ToggleEnabled(usize),
     Filter(String),
     LiveBindsLoaded(Vec<LiveBind>),
     DraftToggleMod(Modifier, bool),
@@ -945,12 +944,6 @@ impl SettingsModule for ShortcutsModule {
                 }
                 self.save_and_maybe_reload()
             }
-            Message::ToggleEnabled(i) => {
-                if let Some(shortcut) = self.shortcuts.get_mut(i) {
-                    shortcut.enabled = !shortcut.enabled;
-                }
-                self.save_and_maybe_reload()
-            }
             Message::Filter(v) => {
                 self.filter = v;
                 Task::none()
@@ -1328,9 +1321,19 @@ impl SettingsModule for ShortcutsModule {
                 .spacing(spacing::XS)
                 .align_y(iced::Alignment::Center);
 
-                let mut what = column![scaled_text(description, density::ROW_TEXT_BASE * 0.9, scale)
-                    .color(hyprforge_ui::theme::text())]
-                .spacing(2.0);
+                // A bind that is switched off stays in its place, dimmed and
+                // saying so — the switch itself is in the editor now, one
+                // click away, rather than a bright toggle on every row.
+                let off = !shortcut.enabled;
+                let mut name = row![scaled_text(description, density::ROW_TEXT_BASE * 0.9, scale).color(
+                    if off { hyprforge_ui::theme::text_dim() } else { hyprforge_ui::theme::text() }
+                )]
+                .spacing(spacing::SM)
+                .align_y(iced::Alignment::Center);
+                if off {
+                    name = name.push(hint_text("Off", scale));
+                }
+                let mut what = column![name].spacing(2.0);
                 if !conflicts.is_empty() {
                     what = what.push(
                         hint_text(format!("also bound to {}", conflicts.join(", ")), scale)
@@ -1338,46 +1341,43 @@ impl SettingsModule for ShortcutsModule {
                     );
                 }
 
-                // Armed rows swap Edit/Delete for the confirm pair, so the
-                // only two things that can happen next are the two the user
-                // is being asked about.
-                let actions: Element<'_, Message> = if self.pending_delete == Some(i) {
-                    row![
-                        secondary_button("Keep").on_press(Message::DeleteCancel),
-                        danger_button("Delete for good", Message::DeleteConfirm(i)),
-                    ]
-                    .spacing(spacing::XS)
-                    .into()
-                } else {
-                    // Delete is quiet here and red only once armed: it
-                    // already asks before it acts, and a red button on every
-                    // one of sixty rows made the danger colour the table's
-                    // texture instead of a warning.
-                    row![
-                        secondary_button("Edit").on_press(Message::Edit(i)),
-                        secondary_button("Delete").on_press(Message::Delete(i)),
-                    ]
-                    .spacing(spacing::XS)
-                    .into()
-                };
-
-                let line = row![
-                    toggle(shortcut.enabled, scale).on_toggle(move |_| Message::ToggleEnabled(i)),
+                // Keys and what they do; the dispatcher only for someone who
+                // asked to see config names. The space at the end is where
+                // the row's buttons appear, kept free so they never land on
+                // the text.
+                let armed = self.pending_delete == Some(i);
+                let mut line = row![
                     container(keys).width(Length::FillPortion(KEYS_PORTION)),
                     container(what).width(Length::FillPortion(ACTION_PORTION)),
-                    container(config_line(shortcut.action.dispatcher.clone(), scale))
-                        .width(Length::FillPortion(DISPATCHER_PORTION)),
-                    actions,
                 ]
                 .spacing(spacing::MD)
                 .align_y(iced::Alignment::Center);
+                if crate::prefs::show_config_names() {
+                    line = line.push(
+                        container(config_line(shortcut.action.dispatcher.clone(), scale))
+                            .width(Length::FillPortion(DISPATCHER_PORTION)),
+                    );
+                }
+                // Armed rows show the confirm pair outright, so the only two
+                // things that can happen next are the two the user is being
+                // asked about — and they must not vanish with the pointer.
+                if armed {
+                    line = line.push(
+                        row![
+                            secondary_button("Keep").on_press(Message::DeleteCancel),
+                            danger_button("Delete for good", Message::DeleteConfirm(i)),
+                        ]
+                        .spacing(spacing::XS),
+                    );
+                } else {
+                    line = line.push(iced::widget::Space::new().width(Length::Fixed(scale.apply(ROW_ACTIONS_WIDTH))));
+                }
 
                 // A conflicting bind's row takes a faint warning tint on
                 // top of its stripe — the mockup's flagged row, in the
                 // colour the Theme gives a conflicting bind.
                 let has_conflict = !conflicts.is_empty();
-                group = group.push(
-                    container(line)
+                let base = container(line)
                         .padding([spacing::SM, spacing::MD])
                         .width(Length::Fill)
                         .style(move |_t: &iced::Theme| {
@@ -1397,7 +1397,36 @@ impl SettingsModule for ShortcutsModule {
                                     ..base
                                 },
                             }
-                        }),
+                        });
+                // Edit and Delete appear over the row under the pointer, and
+                // a click anywhere else on it opens the editor. Sixty rows of
+                // Edit and Delete were most of what the table was made of.
+                // Delete is quiet until armed: it already asks before it
+                // acts, and a red button on every row made the danger colour
+                // the table's texture instead of a warning.
+                let row_element: Element<'_, Message> = if armed {
+                    base.into()
+                } else {
+                    iced::widget::hover(
+                        base,
+                        container(
+                            row![
+                                secondary_button("Edit").on_press(Message::Edit(i)),
+                                secondary_button("Delete").on_press(Message::Delete(i)),
+                            ]
+                            .spacing(spacing::XS),
+                        )
+                        .padding([0.0, spacing::MD])
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .align_x(iced::alignment::Horizontal::Right)
+                        .align_y(iced::alignment::Vertical::Center),
+                    )
+                };
+                group = group.push(
+                    iced::widget::mouse_area(row_element)
+                        .on_press(Message::Edit(i))
+                        .interaction(iced::mouse::Interaction::Pointer),
                 );
             }
             list = list.push(group);
@@ -1440,6 +1469,10 @@ const KEYS_PORTION: u16 = 3;
 const ACTION_PORTION: u16 = 4;
 const DISPATCHER_PORTION: u16 = 3;
 
+/// The space kept free at a row's end for the Edit and Delete that appear
+/// over it on hover.
+const ROW_ACTIONS_WIDTH: f32 = 140.0;
+
 /// The table's column heads, laid out on the rows' own portions — with a
 /// spacer where each row has its switch and its buttons, so the heads sit
 /// over the columns they name.
@@ -1447,16 +1480,11 @@ fn table_header<'a>(scale: FontScale) -> Element<'a, Message> {
     let head = |label: &str, portion: u16| {
         container(section_label(label, scale)).width(Length::FillPortion(portion))
     };
-    container(
-        row![
-            iced::widget::Space::new().width(Length::Fixed(scale.apply(40.0))),
-            head("Keys", KEYS_PORTION),
-            head("Action", ACTION_PORTION),
-            head("Dispatcher", DISPATCHER_PORTION),
-            iced::widget::Space::new().width(Length::Fixed(scale.apply(140.0))),
-        ]
-        .spacing(spacing::MD),
-    )
+    let mut heads = row![head("Keys", KEYS_PORTION), head("Action", ACTION_PORTION)].spacing(spacing::MD);
+    if crate::prefs::show_config_names() {
+        heads = heads.push(head("Dispatcher", DISPATCHER_PORTION));
+    }
+    container(heads.push(iced::widget::Space::new().width(Length::Fixed(scale.apply(ROW_ACTIONS_WIDTH)))))
     .padding([0.0, spacing::MD])
     .into()
 }
@@ -1593,8 +1621,11 @@ impl ShortcutsModule {
         body = body.push(editor_group("Key", self.key_rows(draft, scale), scale));
         body = body.push(editor_group("Action", self.action_rows(draft, scale), scale));
         body = body.push(editor_group("Options", self.options_rows(draft, scale), scale));
-        body = body.push(column![section_label("Writes", scale), self.preview_section(draft, scale)]
-            .spacing(spacing::SM));
+        // The exact line, for whoever asked to see config.
+        if crate::prefs::show_config_names() {
+            body = body.push(column![section_label("Writes", scale), self.preview_section(draft, scale)]
+                .spacing(spacing::SM));
+        }
 
         let blockers = draft.blockers();
         if let Some(first) = blockers.first() {

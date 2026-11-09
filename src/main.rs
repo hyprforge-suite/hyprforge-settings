@@ -1700,7 +1700,7 @@ impl App {
                 // own plumbing.
                 match has_pending {
                     false => Element::from(Space::new()),
-                    true => chip("Not applied yet", Tint::Warning, scale).into(),
+                    true => chip("Not applied yet", Tint::Warning, scale),
                 },
             ]
             .spacing(spacing::MD)

@@ -4,10 +4,12 @@ The Settings app for Hyprforge — an [iced](https://iced.rs) GUI of
 nineteen pages in five sidebar groups: Get started (Set up), System
 (Displays, Power & battery, Keyboard & mouse, Default apps), Connectivity
 (Network, Bluetooth),
-Hyprland (Windows & workspaces, Keybinds, Animations, Window rules, Idle &
+Desktop (Windows & workspaces, Keybinds, Animations, Window rules, Idle &
 lock, Session, Advanced) and Personal (Appearance, Wallpaper, Night light,
 Screen sharing, Tray) — `src/main.rs`'s `Screen` enum and `NAV`. A search
-palette in the header finds any page, setting or config key.
+palette in the header finds any page or setting, by its name or its
+config key. Config names are hidden unless Advanced → **Show config
+names** is on (`src/prefs.rs`, stored in `settings-app.toml`).
 
 ![The Settings app on its Appearance page: the sidebar of pages in five groups, and the desktop theme's options](https://raw.githubusercontent.com/hyprforge-suite/hyprforge/main/docs/images/settings.png)
 

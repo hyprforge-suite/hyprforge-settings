@@ -298,23 +298,32 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
         let key = setting.key;
         let on_reset = self.on_reset;
 
-        // The config line and the source, together: the line is what the
-        // setting is, the chip says whose it is. Always both — the chip
-        // on a default is what stops a row claiming a value is the user's
-        // when Hyprland is only doing what it does unasked (see the
-        // module doc).
-        let mut hint = column![row![
-            config_line(config_text(key, current), scale),
-            chip(source.short_label(), source.tint(), scale),
-        ]
-        .spacing(spacing::SM)
-        .align_y(iced::Alignment::Center)]
-        .spacing(2.0);
+        // The config line and the source, together, and only for someone
+        // who asked to see them (`crate::prefs`): the line is what the
+        // setting is, the chip says whose it is. Both or neither — the
+        // chip on a default is what stops a row claiming a value is the
+        // user's when Hyprland is only doing what it does unasked (see
+        // the module doc).
+        let mut hint = column![].spacing(2.0);
+        let mut said = false;
+        if crate::prefs::show_config_names() {
+            said = true;
+            hint = hint.push(
+                row![
+                    config_line(config_text(key, current), scale),
+                    chip(source.short_label(), source.tint(), scale),
+                ]
+                .spacing(spacing::SM)
+                .align_y(iced::Alignment::Center),
+            );
+        }
         if let Some(problem) = self.draft_errors.get(key) {
+            said = true;
             hint = hint.push(hint_text(problem.clone(), scale).color(theme::error()));
         }
+        let hint: Option<Element<'a, M>> = said.then(|| hint.into());
 
-        let control: Element<'a, M> = if owned {
+        let control: Element<'a, M> = if resettable(owned, setting, current) {
             row![control, secondary_button("Reset").on_press(on_reset(key))]
                 .spacing(spacing::SM)
                 .align_y(iced::Alignment::Center)
@@ -327,7 +336,7 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
         // own under every label, which made a page of fifty settings
         // mostly explanation; the mockup's rows are one line and a config
         // line, and the text is still one hover — or one search — away.
-        let body = setting_row(index, setting.label, Some(hint.into()), control, scale);
+        let body = setting_row(index, setting.label, hint, control, scale);
         if setting.help.trim().is_empty() {
             return body;
         }
@@ -335,6 +344,15 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
             .gap(spacing::XS)
             .into()
     }
+}
+
+/// Whether a row offers Reset: only when Hyprforge writes the value *and*
+/// it is not the default. A Reset beside a value that already is the
+/// default is a button that visibly does nothing — Layout variant `""`
+/// showed one — and a column of them is most of what made the page read
+/// as a config editor.
+fn resettable(owned: bool, setting: &Setting, current: &Value) -> bool {
+    owned && *current != Value::default_for(&setting.kind)
 }
 
 /// A row's config line: `key = value`, with an empty value written as
@@ -640,6 +658,22 @@ pub fn parse_for(kind: &Kind, raw: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const VARIANT: Setting = Setting {
+        key: "input:kb_variant",
+        label: "Layout variant",
+        help: "",
+        kind: Kind::Text { default: "" },
+    };
+
+    /// Layout variant `""`, written by Hyprforge, showed a Reset that could
+    /// only put back what was already there.
+    #[test]
+    fn reset_is_offered_only_for_a_value_that_differs_from_the_default() {
+        assert!(!resettable(true, &VARIANT, &Value::Text(String::new())), "already the default");
+        assert!(resettable(true, &VARIANT, &Value::Text("intl".into())));
+        assert!(!resettable(false, &VARIANT, &Value::Text("intl".into())), "not ours to reset");
+    }
 
     #[test]
     fn a_colour_swatch_reads_both_hyprland_forms() {

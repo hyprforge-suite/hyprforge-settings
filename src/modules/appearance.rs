@@ -63,6 +63,8 @@ impl Tab {
 #[derive(Debug, Clone)]
 pub enum Message {
     TabSelected(Tab),
+    /// Open or close the Writes block under the settings.
+    WritesToggled,
     // -- Hyprland settings --
     Set(&'static str, Value),
     DraftChanged(&'static str, String),
@@ -144,6 +146,9 @@ impl Installed {
 
 pub struct AppearanceModule {
     tab: Tab,
+    /// Whether the Writes block is open. It starts closed, and is only
+    /// offered at all with config names on (`crate::prefs`).
+    writes_open: bool,
     stored: Appearance,
     drafts: BTreeMap<&'static str, String>,
     /// Keys written since this window opened, for the "← changed" marks
@@ -214,6 +219,7 @@ impl AppearanceModule {
                 stored,
                 drafts: BTreeMap::new(),
                 changed: std::collections::BTreeSet::new(),
+                writes_open: false,
                 draft_errors: BTreeMap::new(),
                 animation_drafts: BTreeMap::new(),
                 animation_errors: BTreeMap::new(),
@@ -588,6 +594,10 @@ impl SettingsModule for AppearanceModule {
                         Task::none()
                     }
                 }
+            }
+            Message::WritesToggled => {
+                self.writes_open = !self.writes_open;
+                Task::none()
             }
             Message::DesktopCommit(key) => {
                 let Some(raw) = self.desktop_drafts.get(key).cloned() else {
@@ -965,9 +975,19 @@ impl AppearanceModule {
     /// is that nothing rewrites a dotfile silently, and the file's own
     /// text is the only thing that proves that. Absent when the page
     /// writes nothing, rather than a box saying so.
+    ///
+    /// Only for someone who turned config names on, under the settings
+    /// rather than above them, and closed until asked for: the proof is
+    /// for whoever wants to check it, and it had been the first thing on
+    /// the page, before a single setting.
     fn writes_block(&self, scale: FontScale) -> Option<Element<'_, Message>> {
-        if self.stored.settings.is_empty() {
+        if self.stored.settings.is_empty() || !crate::prefs::show_config_names() {
             return None;
+        }
+        if !self.writes_open {
+            return Some(
+                secondary_button("Show the file this page writes").on_press(Message::WritesToggled).into(),
+            );
         }
         let lua = hyprforge_appearance::apply::generate(&self.stored, self.known_curves().as_deref());
         let mut lines = column![config_line(home_relative(&appearance_lua_path()), scale)]
@@ -982,7 +1002,12 @@ impl AppearanceModule {
         }
         Some(
             column![
-                section_label("Writes", scale),
+                row![
+                    section_label("Writes", scale),
+                    iced::widget::Space::new().width(Length::Fill),
+                    secondary_button("Hide").on_press(Message::WritesToggled),
+                ]
+                .align_y(iced::Alignment::Center),
                 container(lines)
                     .padding(spacing::MD)
                     .width(Length::Fill)
@@ -1009,10 +1034,6 @@ impl AppearanceModule {
         mut content: iced::widget::Column<'a, Message>,
         scale: FontScale,
     ) -> iced::widget::Column<'a, Message> {
-        if let Some(writes) = self.writes_block(scale) {
-            content = content.push(writes);
-        }
-
         let rows = self.rows();
         let mut any = false;
         for category in CATALOG.categories {
@@ -1039,8 +1060,15 @@ impl AppearanceModule {
                 scale,
             ));
         }
-        for (_, why) in CATALOG.unsupported {
-            content = content.push(meta_text(*why, 12.0, scale));
+        // Why a documented option is missing is a note for someone reading
+        // the wiki beside this page, which is who turns config names on.
+        if crate::prefs::show_config_names() {
+            for (_, why) in CATALOG.unsupported {
+                content = content.push(meta_text(*why, 12.0, scale));
+            }
+        }
+        if let Some(writes) = self.writes_block(scale) {
+            content = content.push(writes);
         }
         content
     }
@@ -1096,8 +1124,14 @@ impl AppearanceModule {
             } else {
                 super::setting_rows::Source::Default
             };
-            let mut hint = column![chip(source.short_label(), source.tint(), scale)].spacing(2.0);
+            let mut hint = column![].spacing(2.0);
+            let mut said = false;
+            if crate::prefs::show_config_names() {
+                said = true;
+                hint = hint.push(chip(source.short_label(), source.tint(), scale));
+            }
             if let Some(problem) = self.animation_errors.get(&leaf) {
+                said = true;
                 hint = hint.push(hint_text(problem.clone(), scale).color(theme::error()));
             }
 
@@ -1134,7 +1168,7 @@ impl AppearanceModule {
                     .push(secondary_button("Reset").on_press(Message::AnimationReset(leaf.clone())));
             }
 
-            rows.push(setting_row(rows.len(), leaf.clone(), Some(hint.into()), controls, scale));
+            rows.push(setting_row(rows.len(), leaf.clone(), said.then(|| hint.into()), controls, scale));
         }
         if rows.is_empty() {
             body = body.push(scaled_text(

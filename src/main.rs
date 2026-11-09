@@ -2,6 +2,7 @@ mod ipc;
 mod look;
 mod module;
 mod modules;
+mod prefs;
 mod search;
 mod setup_cli;
 mod singleton;
@@ -10,7 +11,7 @@ use hyprforge_ui::density;
 use hyprforge_ui::theme::{app_theme, spacing, surface, text, text_dim, FontScale};
 use hyprforge_ui::widgets::{
     chip, config_line, countdown_ring, hint_text, page_header, pending_bar, primary_button, scaled_text, search_field, secondary_button,
-    section_label, selectable_row_style, status_dot, Tint,
+    section_label, selectable_row_style, setting_list, setting_row, status_dot, toggle, Tint,
 };
 use crate::module::{NavBadge, Pending, SearchEntry, SettingsModule};
 use iced::keyboard::{self, key, Key};
@@ -723,7 +724,10 @@ const NAV: &[NavCategory] = &[
         screens: &[Screen::Network, Screen::Bluetooth],
     },
     NavCategory {
-        label: "Hyprland",
+        // "Desktop", not "Hyprland": what the pages are about, not what
+        // program reads them — the same pages would be here under any
+        // compositor.
+        label: "Desktop",
         screens: &[
             Screen::WindowsWorkspaces,
             Screen::Shortcuts,
@@ -779,6 +783,8 @@ enum Message {
     /// `hyprforge-settings` invocation found this one already running and
     /// handed its request off instead of opening its own window.
     ExternalRequest(ipc::Signal),
+    /// The Advanced page's "Show config names" switch — see `prefs`.
+    ShowConfigNames(bool),
     Noop,
 }
 
@@ -809,6 +815,11 @@ struct App {
     search_query: String,
     search_id: Id,
     font_scale: FontScale,
+    /// The app's own preferences; [`prefs`] holds the copy rows read.
+    prefs: prefs::Prefs,
+    /// Why the last change to `prefs` could not be saved, under the
+    /// switch that made it.
+    prefs_error: Option<String>,
     main_window: Option<window::Id>,
     /// The pinned countdown prompt, while a display change is provisional.
     revert_popup: Option<window::Id>,
@@ -873,6 +884,8 @@ impl App {
                 search_query: INITIAL_SEARCH.get().cloned().unwrap_or_default(),
                 search_id: Id::unique(),
                 font_scale: FontScale(hyprforge_ui::theme::active().font_scale),
+                prefs: prefs::load(),
+                prefs_error: None,
                 main_window: None,
                 revert_popup: None,
             },
@@ -1101,6 +1114,11 @@ impl App {
                     }
                 }
                 Task::perform(focus_self(), |()| Message::Noop)
+            }
+            Message::ShowConfigNames(on) => {
+                self.prefs.show_config_names = on;
+                self.prefs_error = prefs::save(&self.prefs).err().map(|e| format!("Couldn't save this: {e}"));
+                Task::none()
             }
             Message::Noop => Task::none(),
             Message::WindowRules(msg) => self.window_rules.update(msg).map(Message::WindowRules),
@@ -1348,19 +1366,34 @@ impl App {
         let query = &self.search_query;
         let screens: Vec<Screen> = NAV.iter().flat_map(|c| c.screens.iter().copied()).collect();
         let entries = self.search_entries();
+        let mut settings: Vec<(Screen, SearchEntry<Message>)> =
+            search::best(query, entries.iter(), |(_, e)| e.label, PALETTE_ROWS)
+                .into_iter()
+                .cloned()
+                .collect();
+        let mut keys: Vec<(Screen, SearchEntry<Message>)> =
+            search::best(query, entries.iter(), |(_, e)| e.key, PALETTE_ROWS)
+                .into_iter()
+                .cloned()
+                .collect();
+        // A config name still finds its setting with names hidden — someone
+        // pasting `gaps_in` from a guide should land on "Gaps between
+        // windows" — but as the setting, by its name, not as a key = value
+        // line.
+        if !prefs::show_config_names() {
+            for found in keys.drain(..) {
+                if settings.len() < PALETTE_ROWS && !settings.iter().any(|(_, e)| e.key == found.1.key) {
+                    settings.push(found);
+                }
+            }
+        }
         Palette {
             pages: search::best(query, screens.iter(), |s| s.title(), PALETTE_PAGES)
                 .into_iter()
                 .copied()
                 .collect(),
-            settings: search::best(query, entries.iter(), |(_, e)| e.label, PALETTE_ROWS)
-                .into_iter()
-                .cloned()
-                .collect(),
-            keys: search::best(query, entries.iter(), |(_, e)| e.key, PALETTE_ROWS)
-                .into_iter()
-                .cloned()
-                .collect(),
+            settings,
+            keys,
         }
     }
 
@@ -1521,7 +1554,19 @@ impl App {
             Host::Appearance => self.appearance.view(scale).map(Message::Appearance),
             Host::Desktop => self.desktop.view(scale).map(Message::Desktop),
             Host::Session => self.session.view(scale).map(Message::Session),
-            Host::System => self.system.view(scale).map(Message::System),
+            // The app's own switch first, above Hyprland's options: it is
+            // about this window, not the compositor.
+            // Padded as the page under it pads itself, so the two line up.
+            Host::System => column![
+                container(self.app_prefs_view(scale)).padding(iced::Padding {
+                    top: spacing::LG,
+                    left: spacing::LG,
+                    right: spacing::LG,
+                    bottom: 0.0,
+                }),
+                self.system.view(scale).map(Message::System),
+            ]
+            .into(),
             Host::Setup => self.setup.view(scale).map(Message::Setup),
         };
 
@@ -1582,6 +1627,31 @@ impl App {
             .into()
     }
 
+    /// "This app" on the Advanced page: the one switch that brings config
+    /// names back for anyone who wants them.
+    fn app_prefs_view(&self, scale: FontScale) -> Element<'_, Message> {
+        let mut hint = column![hint_text(
+            "Shows each setting's Hyprland name and the files Settings writes.",
+            scale,
+        )]
+        .spacing(2.0);
+        if let Some(e) = &self.prefs_error {
+            hint = hint.push(hint_text(e.clone(), scale).color(hyprforge_ui::theme::error()));
+        }
+        column![
+            section_label("This app", scale),
+            setting_list(vec![setting_row(
+                0,
+                "Show config names",
+                Some(hint.into()),
+                toggle(self.prefs.show_config_names, scale).on_toggle(Message::ShowConfigNames),
+                scale,
+            )]),
+        ]
+        .spacing(spacing::SM)
+        .into()
+    }
+
     /// The bar across the top: the app's mark over the sidebar, the
     /// search field over the page, and whether this page has anything
     /// waiting to be written.
@@ -1611,7 +1681,7 @@ impl App {
         .align_y(iced::Alignment::Center);
 
         let search = search_field(
-            "Search any setting or config key",
+            "Search settings",
             &self.search_query,
             Message::SearchChanged,
             Some(Message::SearchSubmit),
@@ -1624,13 +1694,13 @@ impl App {
             row![
                 container(brand).width(Length::Fixed(SIDEBAR_WIDTH - spacing::MD)),
                 search,
-                // "live" in the success colour when what the page shows is
-                // what the files say; "pending" in the warning colour while
-                // anything is held back. The mockup's `● live`, and the
-                // reason it is a state colour: it is a state.
+                // Said only while something is held back. The everyday state
+                // — what the page shows is what is running — needs no badge;
+                // a green "live" on every page was the app describing its
+                // own plumbing.
                 match has_pending {
-                    false => chip("● live", Tint::Success, scale),
-                    true => chip("● pending", Tint::Warning, scale),
+                    false => Element::from(Space::new()),
+                    true => chip("Not applied yet", Tint::Warning, scale).into(),
                 },
             ]
             .spacing(spacing::MD)
@@ -1917,6 +1987,30 @@ mod palette_tests {
     /// then the first setting, then the first key — the order the palette
     /// draws its groups in. If the two orders ever disagreed, Enter would
     /// go somewhere other than where the highlight said.
+    /// Someone pasting a config name from a guide lands on the setting,
+    /// shown by its name, with config names hidden; with them shown it is
+    /// listed as the key it is.
+    #[test]
+    fn a_config_name_finds_its_setting_by_name_unless_names_are_shown() {
+        crate::modules::with_temp_env(|_dir| {
+            let (mut app, _) = App::new();
+            app.search_query = "gaps_in".into();
+
+            prefs::set_show_config_names(false);
+            let hidden = app.palette();
+            assert!(hidden.keys.is_empty(), "no key = value lines with names hidden");
+            assert!(
+                hidden.settings.iter().any(|(_, e)| e.key == "general:gaps_in"),
+                "{:?}",
+                hidden.settings.iter().map(|(_, e)| e.key).collect::<Vec<_>>()
+            );
+
+            prefs::set_show_config_names(true);
+            assert!(app.palette().keys.iter().any(|(_, e)| e.key == "general:gaps_in"));
+            prefs::set_show_config_names(false);
+        });
+    }
+
     #[test]
     fn enter_takes_the_row_the_palette_highlights() {
         let with_page = Palette {

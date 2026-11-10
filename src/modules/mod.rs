@@ -9,6 +9,7 @@ pub mod keycapture;
 pub mod layout_canvas;
 pub mod network;
 pub mod power;
+pub mod rule_summary;
 pub mod session;
 pub mod setup;
 pub mod system;

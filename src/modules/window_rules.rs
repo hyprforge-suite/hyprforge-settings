@@ -28,6 +28,10 @@ use iced::{Element, Length, Task};
 #[derive(Debug, Clone, Default)]
 struct RuleDraft {
     editing_index: Option<usize>,
+    /// The rule is switched off. Negative so a new draft (`Default`) is a
+    /// rule that is on. The switch lives here, in the editor, rather than
+    /// on every row of the list.
+    disabled: bool,
     class: String,
     title: String,
     initial_class: String,
@@ -112,6 +116,7 @@ impl RuleDraft {
 
         RuleDraft {
             editing_index: Some(index),
+            disabled: !rule.enabled,
             class: m.class.clone().unwrap_or_default(),
             title: m.title.clone().unwrap_or_default(),
             initial_class: m.initial_class.clone().unwrap_or_default(),
@@ -458,9 +463,16 @@ pub enum Message {
     /// Arms the confirm on a workspace pin.
     DeleteWorkspacePinConfirm(usize),
     DeleteCancel,
-    MoveUp(usize),
-    MoveDown(usize),
-    ToggleEnabled(usize),
+    /// A press on a rule's row: the start of a drag, or of a click.
+    RowPressed(usize),
+    /// The pointer, mid-drag, came onto a rule's row.
+    RowEntered(usize),
+    /// The button came up over the list: a drop, or a click if it never
+    /// left the row it went down on.
+    RowsReleased,
+    /// The pointer left the list: whatever drag was going on is off.
+    RowsLeft,
+    DraftEnabled(bool),
     DraftClass(String),
     DraftTitle(String),
     DraftInitialClass(String),
@@ -660,6 +672,24 @@ pub struct WindowRulesModule {
     /// fields to reconstruct from memory, which makes an accidental click
     /// far more expensive here than a mis-click usually is.
     pending_delete: Option<PendingDelete>,
+    /// A row being dragged to a new place: `(from, over)`.
+    drag: Option<(usize, usize)>,
+}
+
+/// Space kept free at a rule row's end for the Edit and Delete that
+/// appear over it on hover.
+const ROW_ACTIONS_WIDTH: f32 = 140.0;
+
+/// Moves `items[from]` to `to`, as a drop on row `to` means: dragged down,
+/// it lands below that row; dragged up, above it. `false` when nothing
+/// moved — the same place, or an index past the end.
+fn reorder<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
+    if from == to || from >= items.len() || to >= items.len() {
+        return false;
+    }
+    let item = items.remove(from);
+    items.insert(to, item);
+    true
 }
 
 /// Which row is waiting on a delete confirmation. One field for both lists
@@ -760,6 +790,7 @@ impl WindowRulesModule {
                 import_review: None,
                 store_unreadable,
                 pending_delete: None,
+                drag: None,
             },
             // Read the monitors up front: the workspace-pin dropdown needs
             // them, and a failure here is silent by design — the section
@@ -838,16 +869,18 @@ impl WindowRulesModule {
         // preview used, so what the user was shown is what gets written.
         let name = self.name_for(&draft);
         let editing_index = draft.editing_index;
+        let enabled = !draft.disabled;
         let (matcher, effects) = draft.into_matcher_effects();
         match editing_index.and_then(|i| self.rules.get_mut(i)) {
             Some(rule) => {
+                rule.enabled = enabled;
                 rule.matcher = matcher;
                 rule.effects = effects;
             }
             None => {
                 self.rules.push(Rule {
                     name,
-                    enabled: true,
+                    enabled,
                     matcher,
                     effects,
                 });
@@ -1013,24 +1046,36 @@ impl SettingsModule for WindowRulesModule {
                 self.pending_delete = None;
                 Task::none()
             }
-            Message::MoveUp(i) => {
-                if i > 0 && i < self.rules.len() {
-                    self.rules.swap(i - 1, i);
+            Message::RowPressed(i) => {
+                // Not while a delete waits on its answer: indices are what
+                // the confirm refers to, and a reorder would move them.
+                if self.pending_delete.is_none() && i < self.rules.len() {
+                    self.drag = Some((i, i));
                 }
-                self.save_and_maybe_reload()
+                Task::none()
             }
-            Message::MoveDown(i) => {
-                if i + 1 < self.rules.len() {
-                    self.rules.swap(i, i + 1);
+            Message::RowEntered(i) => {
+                if let Some((_, over)) = &mut self.drag {
+                    *over = i;
                 }
-                self.save_and_maybe_reload()
+                Task::none()
             }
-            Message::ToggleEnabled(i) => {
-                if let Some(rule) = self.rules.get_mut(i) {
-                    rule.enabled = !rule.enabled;
+            Message::RowsLeft => {
+                self.drag = None;
+                Task::none()
+            }
+            Message::RowsReleased => match self.drag.take() {
+                Some((from, over)) if from == over => self.update(Message::Edit(from)),
+                Some((from, over)) => {
+                    if reorder(&mut self.rules, from, over) {
+                        self.save_and_maybe_reload()
+                    } else {
+                        Task::none()
+                    }
                 }
-                self.save_and_maybe_reload()
-            }
+                None => Task::none(),
+            },
+            Message::DraftEnabled(v) => self.edit_draft(|d| d.disabled = !v),
             // Every draft field edit is the same shape: mutate the draft if
             // one is open, never re-render anything else.
             Message::DraftClass(v) => self.edit_draft(|d| d.class = v),
@@ -1400,18 +1445,23 @@ impl SettingsModule for WindowRulesModule {
 
         let mut rows: Vec<Element<'_, Message>> = Vec::new();
         for (i, rule) in self.rules.iter().enumerate() {
-            let summary = rule
-                .matcher
-                .class
-                .clone()
-                .or_else(|| rule.matcher.title.clone())
-                .unwrap_or_else(|| "(no match)".to_string());
+            // Which windows, in words, and what it does to them — the class
+            // regex was the whole row once (`^(steam)$`), and said nothing
+            // about the effect at all.
+            let summary = super::rule_summary::which(&rule.matcher);
+            let does = super::rule_summary::what(&rule.effects);
             // An armed row swaps its whole action set for the confirm pair,
             // so the only two things that can happen next are the two the
             // user is being asked about. Delete is quiet until then, the
             // same as on Keybinds: red on every row made the danger colour
             // the list's texture instead of a warning.
-            let actions: Element<'_, Message> = if self.pending_delete == Some(PendingDelete::Rule(i)) {
+            //
+            // Otherwise the row is its window and nothing else, as on
+            // Keybinds: Edit and Delete over the row under the pointer, a
+            // click opens the editor, a drag moves the rule (order matters —
+            // a later rule wins), and the on/off switch is in the editor.
+            let armed = self.pending_delete == Some(PendingDelete::Rule(i));
+            let control: Element<'_, Message> = if armed {
                 row![
                     secondary_button("Keep").on_press(Message::DeleteCancel),
                     danger_button("Delete for good", Message::DeleteConfirm(i)),
@@ -1419,25 +1469,82 @@ impl SettingsModule for WindowRulesModule {
                 .spacing(spacing::XS)
                 .into()
             } else {
-                row![
-                    secondary_button("Up").on_press(Message::MoveUp(i)),
-                    secondary_button("Down").on_press(Message::MoveDown(i)),
-                    secondary_button("Edit").on_press(Message::Edit(i)),
-                    secondary_button("Delete").on_press(Message::Delete(i)),
-                ]
-                .spacing(spacing::XS)
-                .into()
+                // Where the hover buttons appear, kept free.
+                iced::widget::Space::new().width(Length::Fixed(scale.apply(ROW_ACTIONS_WIDTH))).into()
             };
-            rows.push(setting_row(
-                i,
-                summary,
-                // The rule's name in the file, for whoever asked to see it.
-                crate::prefs::show_config_names().then(|| config_line(rule.name.clone(), scale).into()),
-                row![toggle(rule.enabled, scale).on_toggle(move |_| Message::ToggleEnabled(i)), actions]
-                    .spacing(spacing::MD)
-                    .align_y(iced::Alignment::Center),
-                scale,
-            ));
+            let mut hint = column![].spacing(2.0);
+            let mut said = false;
+            let line = match (rule.enabled, does.is_empty()) {
+                (false, true) => Some("Off".to_string()),
+                (false, false) => Some(format!("Off · {does}")),
+                (true, false) => Some(does),
+                (true, true) => None,
+            };
+            if let Some(line) = line {
+                said = true;
+                hint = hint.push(hyprforge_ui::widgets::hint_text(line, scale));
+            }
+            if crate::prefs::show_config_names() {
+                said = true;
+                // The rule's name and its patterns as the file has them,
+                // for whoever asked to see them.
+                let mut raw = rule.name.clone();
+                for (what, pattern) in [("class", &rule.matcher.class), ("title", &rule.matcher.title)] {
+                    if let Some(p) = pattern {
+                        raw.push_str(&format!("  {what} = {p}"));
+                    }
+                }
+                hint = hint.push(config_line(raw, scale));
+            }
+            let base = setting_row(i, summary, said.then(|| hint.into()), control, scale);
+
+            let dragging = self.drag.is_some();
+            let mut shown: Element<'_, Message> = if armed || dragging {
+                base
+            } else {
+                iced::widget::hover(
+                    base,
+                    container(
+                        row![
+                            secondary_button("Edit").on_press(Message::Edit(i)),
+                            secondary_button("Delete").on_press(Message::Delete(i)),
+                        ]
+                        .spacing(spacing::XS),
+                    )
+                    .padding([0.0, spacing::MD])
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .align_y(iced::alignment::Vertical::Center),
+                )
+            };
+            // Where a drop would land: a line in the text colour on the
+            // edge it would go to, drawn over the row so nothing reflows
+            // under the pointer. Not the accent — that means selected.
+            if let Some((from, _)) = self.drag.filter(|&(from, over)| over == i && from != i) {
+                let edge = if from < i { iced::alignment::Vertical::Bottom } else { iced::alignment::Vertical::Top };
+                let line = container(iced::widget::Space::new().width(Length::Fill).height(Length::Fixed(2.0)))
+                    .style(|_t: &iced::Theme| iced::widget::container::Style {
+                        background: Some(iced::Background::Color(hyprforge_ui::theme::text())),
+                        ..iced::widget::container::Style::default()
+                    });
+                shown = iced::widget::stack![
+                    shown,
+                    container(line).width(Length::Fill).height(Length::Fill).align_y(edge),
+                ]
+                .into();
+            }
+            rows.push(
+                iced::widget::mouse_area(shown)
+                    .on_press(Message::RowPressed(i))
+                    .on_enter(Message::RowEntered(i))
+                    .interaction(if dragging {
+                        iced::mouse::Interaction::Grabbing
+                    } else {
+                        iced::mouse::Interaction::Pointer
+                    })
+                    .into(),
+            );
         }
 
         // The whole list, in the page's one scroll area: it sat in a
@@ -1447,7 +1554,12 @@ impl SettingsModule for WindowRulesModule {
         let list: Element<'_, Message> = if rows.is_empty() {
             meta_text("No rules yet.", BASE_TEXT_SIZE, scale).into()
         } else {
-            setting_list(rows).into()
+            // The drop is heard by the whole list, not one row: a press
+            // that becomes a drag ends wherever the pointer is.
+            iced::widget::mouse_area(setting_list(rows))
+                .on_release(Message::RowsReleased)
+                .on_exit(Message::RowsLeft)
+                .into()
         };
         content = content.push(column![section_label("Rules", scale), list].spacing(spacing::SM));
         content = content.push(
@@ -1884,6 +1996,7 @@ impl WindowRulesModule {
             "New rule"
         };
         let form = column![
+            row_field("On", toggle(!draft.disabled, scale).on_toggle(Message::DraftEnabled)),
             row_field(
                 "Class",
                 row![
@@ -2455,6 +2568,87 @@ mod tests {
             ..base
         };
         assert!(both.blockers().is_empty(), "{:?}", both.blockers());
+    }
+
+    fn three_rules(m: &mut WindowRulesModule) {
+        for class in ["firefox", "discord", "mpv"] {
+            m.draft = Some(RuleDraft { class: class.to_string(), float: true, ..Default::default() });
+            let _ = m.update(Message::DraftSave);
+        }
+        assert_eq!(classes(m), ["firefox", "discord", "mpv"]);
+    }
+
+    fn classes(m: &WindowRulesModule) -> Vec<String> {
+        m.rules.iter().map(|r| r.matcher.class.clone().unwrap_or_default()).collect()
+    }
+
+    #[test]
+    fn a_drop_puts_the_rule_on_the_far_side_of_the_row_it_lands_on() {
+        let mut v = vec!['a', 'b', 'c', 'd'];
+        assert!(reorder(&mut v, 0, 2));
+        assert_eq!(v, ['b', 'c', 'a', 'd'], "dragged down: below c");
+        assert!(reorder(&mut v, 3, 0));
+        assert_eq!(v, ['d', 'b', 'c', 'a'], "dragged up: above the first");
+        assert!(!reorder(&mut v, 1, 1));
+        assert!(!reorder(&mut v, 1, 9));
+    }
+
+    /// Order is what decides which rule wins, so a drag is a save.
+    #[test]
+    fn dragging_a_rule_moves_it_and_saves_the_order() {
+        with_isolated_module(|m| {
+            three_rules(m);
+            let _ = m.update(Message::RowPressed(2));
+            let _ = m.update(Message::RowEntered(1));
+            let _ = m.update(Message::RowEntered(0));
+            let _ = m.update(Message::RowsReleased);
+            assert_eq!(classes(m), ["mpv", "firefox", "discord"]);
+            assert!(m.drag.is_none());
+            let stored = hyprforge_windowrules::storage::load(&hyprforge_core::paths::window_rules_toml_path())
+                .unwrap();
+            assert_eq!(stored.rules[0].matcher.class.as_deref(), Some("mpv"));
+        });
+    }
+
+    #[test]
+    fn a_press_and_release_on_one_row_opens_its_editor_and_moves_nothing() {
+        with_isolated_module(|m| {
+            three_rules(m);
+            let _ = m.update(Message::RowPressed(1));
+            let _ = m.update(Message::RowsReleased);
+            assert_eq!(m.draft.as_ref().and_then(|d| d.editing_index), Some(1));
+            assert_eq!(classes(m), ["firefox", "discord", "mpv"]);
+        });
+    }
+
+    #[test]
+    fn leaving_the_list_mid_drag_drops_nothing() {
+        with_isolated_module(|m| {
+            three_rules(m);
+            let _ = m.update(Message::RowPressed(0));
+            let _ = m.update(Message::RowEntered(2));
+            let _ = m.update(Message::RowsLeft);
+            let _ = m.update(Message::RowsReleased);
+            assert_eq!(classes(m), ["firefox", "discord", "mpv"]);
+            assert!(m.draft.is_none());
+        });
+    }
+
+    /// The per-row switch moved into the editor; it has to round-trip, or
+    /// editing a switched-off rule would quietly switch it back on.
+    #[test]
+    fn the_editor_switches_a_rule_off_and_keeps_it_off() {
+        with_isolated_module(|m| {
+            three_rules(m);
+            let _ = m.update(Message::Edit(0));
+            let _ = m.update(Message::DraftEnabled(false));
+            let _ = m.update(Message::DraftSave);
+            assert!(!m.rules[0].enabled);
+            let _ = m.update(Message::Edit(0));
+            assert!(m.draft.as_ref().unwrap().disabled, "read back as off");
+            let _ = m.update(Message::DraftSave);
+            assert!(!m.rules[0].enabled, "saving it again leaves it off");
+        });
     }
 
     /// Save must actually refuse, not just look disabled.

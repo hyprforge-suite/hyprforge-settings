@@ -1,3 +1,4 @@
+pub mod app_keys;
 pub mod appearance;
 pub mod bluetooth;
 pub mod catalog_screen;

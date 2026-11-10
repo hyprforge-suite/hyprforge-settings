@@ -31,6 +31,7 @@ use modules::power::{
 use modules::shortcuts::ShortcutsModule;
 use modules::default_apps::DefaultAppsModule;
 use modules::setup::SetupModule;
+use modules::app_keys::AppKeysModule;
 use modules::tray::TrayModule;
 use modules::window_rules::WindowRulesModule;
 
@@ -70,6 +71,7 @@ fn screen_from_cli(name: &str) -> Option<Screen> {
         "night-light" | "nightlight" => Screen::NightLight,
         "screen-sharing" | "screensharing" => Screen::Sharing,
         "tray" => Screen::Tray,
+        "app-shortcuts" | "app-keys" => Screen::AppShortcuts,
         // What `--setup` hands a running window when it finds one open,
         // so the wording matches the flag rather than the page title.
         "setup" | "set-up" | "get-started" => Screen::Setup,
@@ -110,6 +112,7 @@ const SCREEN_NAMES: &[&str] = &[
     "night-light",
     "screen-sharing",
     "tray",
+    "app-shortcuts",
 ];
 
 const SIDEBAR_WIDTH: f32 = 240.0;
@@ -571,6 +574,7 @@ enum Screen {
     NightLight,
     Sharing,
     Tray,
+    AppShortcuts,
     Setup,
 }
 
@@ -598,6 +602,7 @@ impl Screen {
             Screen::NightLight => "Night light",
             Screen::Sharing => "Screen sharing",
             Screen::Tray => "Tray",
+            Screen::AppShortcuts => "App shortcuts",
             Screen::Setup => "Set up",
         }
     }
@@ -624,6 +629,7 @@ impl Screen {
             Screen::NightLight => Page::NightLight,
             Screen::Sharing => Page::ScreenSharing,
             Screen::Tray => Page::Tray,
+            Screen::AppShortcuts => Page::Keybinds,
             Screen::Setup => Page::Setup,
         }
     }
@@ -642,6 +648,7 @@ impl Screen {
             Screen::Session => Host::Session,
             Screen::System => Host::System,
             Screen::Tray => Host::Tray,
+            Screen::AppShortcuts => Host::AppKeys,
             Screen::Setup => Host::Setup,
             Screen::Appearance | Screen::WindowsWorkspaces | Screen::Animations => Host::Appearance,
             Screen::Wallpaper | Screen::NightLight | Screen::Idle | Screen::Sharing => {
@@ -688,6 +695,7 @@ enum Host {
     Bluetooth,
     Power,
     Tray,
+    AppKeys,
     Appearance,
     Desktop,
     DefaultApps,
@@ -746,6 +754,7 @@ const NAV: &[NavCategory] = &[
             Screen::NightLight,
             Screen::Sharing,
             Screen::Tray,
+            Screen::AppShortcuts,
         ],
     },
 ];
@@ -770,6 +779,7 @@ enum Message {
     Bluetooth(modules::bluetooth::Message),
     Power(modules::power::Message),
     Tray(modules::tray::Message),
+    AppKeys(modules::app_keys::Message),
     Appearance(modules::appearance::Message),
     Desktop(modules::desktop::Message),
     DefaultApps(modules::default_apps::Message),
@@ -798,6 +808,7 @@ struct App {
     bluetooth: BluetoothModule<LazyBlueZBackend>,
     power: PowerModule<hyprforge_power::DetachedBackend, LazyUPowerBackend, LazyPowerProfilesDaemonBackend>,
     tray: TrayModule,
+    app_keys: AppKeysModule,
     appearance: AppearanceModule,
     desktop: DesktopModule,
     default_apps: DefaultAppsModule,
@@ -845,6 +856,7 @@ impl App {
             std::sync::Arc::new(LazyPowerProfilesDaemonBackend::new()),
         );
         let (tray, tray_task) = TrayModule::new();
+        let (app_keys, app_keys_task) = AppKeysModule::new();
         let screen = INITIAL_SCREEN.get().copied().unwrap_or(Screen::Monitors);
         let (mut appearance, appearance_task) = AppearanceModule::new();
         let (mut desktop, desktop_task) = DesktopModule::new();
@@ -873,6 +885,7 @@ impl App {
                 bluetooth,
                 power,
                 tray,
+                app_keys,
                 appearance,
                 desktop,
                 default_apps,
@@ -899,6 +912,7 @@ impl App {
                 bluetooth_task.map(Message::Bluetooth),
                 power_task.map(Message::Power),
                 tray_task.map(Message::Tray),
+                app_keys_task.map(Message::AppKeys),
                 appearance_task.map(Message::Appearance),
                 desktop_task.map(Message::Desktop),
                 default_apps_task.map(Message::DefaultApps),
@@ -1043,6 +1057,11 @@ impl App {
                 Host::Tray => {
                     self.tray.update(modules::tray::Message::Refresh).map(Message::Tray)
                 }
+                // An app may have been installed, or its file edited by
+                // hand, since the page last asked.
+                Host::AppKeys => {
+                    self.app_keys.update(modules::app_keys::Message::Refresh).map(Message::AppKeys)
+                }
                 // An application may have been installed since this
                 // screen was last looked at.
                 Host::DefaultApps => self
@@ -1066,6 +1085,7 @@ impl App {
             Message::Bluetooth(msg) => self.bluetooth.update(msg).map(Message::Bluetooth),
             Message::Power(msg) => self.power.update(msg).map(Message::Power),
             Message::Tray(msg) => self.tray.update(msg).map(Message::Tray),
+            Message::AppKeys(msg) => self.app_keys.update(msg).map(Message::AppKeys),
             Message::DefaultApps(msg) => {
                 self.default_apps.update(msg).map(Message::DefaultApps)
             }
@@ -1202,6 +1222,7 @@ impl App {
             Host::Bluetooth => self.bluetooth.subtitle(),
             Host::Power => self.power.subtitle(),
             Host::Tray => self.tray.subtitle(),
+            Host::AppKeys => self.app_keys.subtitle(),
             Host::DefaultApps => self.default_apps.subtitle(),
             Host::Appearance => self.appearance.subtitle(),
             Host::Desktop => self.desktop.subtitle(),
@@ -1222,6 +1243,7 @@ impl App {
             Host::Bluetooth => self.bluetooth.nav_badge(),
             Host::Power => self.power.nav_badge(),
             Host::Tray => self.tray.nav_badge(),
+            Host::AppKeys => self.app_keys.nav_badge(),
             Host::DefaultApps => self.default_apps.nav_badge(),
             Host::Appearance => self.appearance.nav_badge(),
             Host::Desktop => self.desktop.nav_badge(),
@@ -1244,6 +1266,7 @@ impl App {
             Host::Bluetooth => self.bluetooth.header_actions(scale).map(|e| e.map(Message::Bluetooth)),
             Host::Power => self.power.header_actions(scale).map(|e| e.map(Message::Power)),
             Host::Tray => self.tray.header_actions(scale).map(|e| e.map(Message::Tray)),
+            Host::AppKeys => self.app_keys.header_actions(scale).map(|e| e.map(Message::AppKeys)),
             Host::DefaultApps => {
                 self.default_apps.header_actions(scale).map(|e| e.map(Message::DefaultApps))
             }
@@ -1266,6 +1289,7 @@ impl App {
             Host::Bluetooth => self.bluetooth.pending().map(|p| p.map(Message::Bluetooth)),
             Host::Power => self.power.pending().map(|p| p.map(Message::Power)),
             Host::Tray => self.tray.pending().map(|p| p.map(Message::Tray)),
+            Host::AppKeys => self.app_keys.pending().map(|p| p.map(Message::AppKeys)),
             Host::DefaultApps => self.default_apps.pending().map(|p| p.map(Message::DefaultApps)),
             Host::Appearance => self.appearance.pending().map(|p| p.map(Message::Appearance)),
             Host::Desktop => self.desktop.pending().map(|p| p.map(Message::Desktop)),
@@ -1550,6 +1574,7 @@ impl App {
             Host::Bluetooth => self.bluetooth.view(scale).map(Message::Bluetooth),
             Host::Power => self.power.view(scale).map(Message::Power),
             Host::Tray => self.tray.view(scale).map(Message::Tray),
+            Host::AppKeys => self.app_keys.view(scale).map(Message::AppKeys),
             Host::DefaultApps => self.default_apps.view(scale).map(Message::DefaultApps),
             Host::Appearance => self.appearance.view(scale).map(Message::Appearance),
             Host::Desktop => self.desktop.view(scale).map(Message::Desktop),
@@ -1776,10 +1801,11 @@ impl App {
         // keyboard belongs to it — including Ctrl+F and Escape. Binding
         // Ctrl+F would otherwise navigate to the search box instead of being
         // recorded, and there'd be no way to bind it at all.
-        if self.shortcuts.is_capturing() {
+        if self.shortcuts.is_capturing() || self.app_keys.is_capturing() {
             return Subscription::batch([
                 self.displays.subscription().map(Message::Displays),
                 self.shortcuts.subscription().map(Message::Shortcuts),
+                self.app_keys.subscription().map(Message::AppKeys),
                 self.network.subscription().map(Message::Network),
                 self.bluetooth.subscription().map(Message::Bluetooth),
                 self.power.subscription().map(Message::Power),
@@ -1949,7 +1975,7 @@ mod cli_tests {
         for (i, a) in listed.iter().enumerate() {
             assert!(!listed[i + 1..].contains(a), "{a:?} is listed twice");
         }
-        assert_eq!(listed.len(), 19, "a page was added or dropped without updating this count");
+        assert_eq!(listed.len(), 20, "a page was added or dropped without updating this count");
     }
 
     /// `--setup` hands a running window `show-screen setup`, and that has
@@ -2118,11 +2144,14 @@ mod render {
             copy_dir(&home.join(".config/dconf"), &dir.join("dconf"));
             hyprforge_ui::theme::init(hyprforge_appearance::look::resolve());
             let (mut app, _) = App::new();
+            // App shortcuts asks the installed apps in a task, which a
+            // render does not run; asked here instead, the same way.
+            let _ = app.app_keys.update(modules::app_keys::Message::Loaded(modules::app_keys::ask_installed()));
             let screens = [
                 Screen::Monitors, Screen::Power, Screen::Input, Screen::DefaultApps, Screen::Network, Screen::Bluetooth,
                 Screen::WindowsWorkspaces, Screen::Shortcuts, Screen::Animations, Screen::WindowRules, Screen::Idle,
                 Screen::Session, Screen::System, Screen::Appearance, Screen::Wallpaper, Screen::NightLight, Screen::Sharing,
-                Screen::Tray, Screen::Setup,
+                Screen::Tray, Screen::AppShortcuts, Screen::Setup,
             ];
             for screen in screens {
                 app.screen = screen;

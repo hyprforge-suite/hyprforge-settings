@@ -36,6 +36,7 @@ hyprforge-input = "0.1"
 hyprforge-appearance = "0.1"
 hyprforge-look = "0.1"
 hyprforge-paths = "0.1"
+hyprforge-keys = { version = "0.1", features = ["edit"] }
 hyprforge-ecosystem = "0.1"
 hyprforge-session = "0.1"
 hyprforge-system = "0.1"

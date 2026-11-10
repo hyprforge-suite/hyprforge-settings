@@ -1,19 +1,26 @@
 # hyprforge-settings
 
 The Settings app for Hyprforge — an [iced](https://iced.rs) GUI of
-nineteen pages in five sidebar groups: Get started (Set up), System
+twenty pages in five sidebar groups: Get started (Set up), System
 (Displays, Power & battery, Keyboard & mouse, Default apps), Connectivity
 (Network, Bluetooth),
 Desktop (Windows & workspaces, Keybinds, Animations, Window rules, Idle &
 lock, Session, Advanced) and Personal (Appearance, Wallpaper, Night light,
-Screen sharing, Tray) — `src/main.rs`'s `Screen` enum and `NAV`. A search
+Screen sharing, Tray, App shortcuts) — `src/main.rs`'s `Screen` enum and `NAV`. A search
 palette in the header finds any page or setting, by its name or its
 config key. Config names are hidden unless Advanced → **Show config
 names** is on (`src/prefs.rs`, stored in `settings-app.toml`).
 
+App shortcuts edits the keys of the suite's own apps — Files and Media —
+which Settings cannot link against: it runs each installed app's
+`--list-keys` (a `hyprforge_keys::Listing`, asked with no display or
+session bus so an older app cannot open a window) and writes one line of
+that app's own `[keys]` table at a time through `hyprforge_keys::edit`.
+An app that is not installed has no section.
+
 ![The Settings app on its Appearance page: the sidebar of pages in five groups, and the desktop theme's options](https://raw.githubusercontent.com/hyprforge-suite/hyprforge/main/docs/images/settings.png)
 
-The pages are drawn by fourteen modules, each a `SettingsModule`
+The pages are drawn by fifteen modules, each a `SettingsModule`
 (`src/module.rs`) under `src/modules/`, modeled directly on iced's own
 `update`/`view` split so a module feels like a miniature iced application
 rather than a bespoke plugin API. Some modules back several pages —

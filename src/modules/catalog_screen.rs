@@ -163,6 +163,8 @@ pub enum Message {
     /// user's own config.
     Reset(&'static str),
     FilterChanged(String),
+    /// Open or close a group's **More** — its rarely changed settings.
+    MoreToggled(&'static str),
     ImportOpen,
     /// The user's own config, evaluated. Import reads the config file, not
     /// the running compositor — see `hyprforge_input::import` for why.
@@ -202,6 +204,8 @@ pub struct CatalogScreen<M: Catalogued> {
     /// banner at the top.
     pub(crate) draft_errors: BTreeMap<&'static str, String>,
     pub(crate) filter: String,
+    /// Groups whose **More** is open, by category key.
+    pub(crate) more_open: std::collections::BTreeSet<&'static str>,
     pub(crate) config: HyprConfig,
     pub(crate) setup_plan: SetupPlan,
     pub(crate) error: Option<String>,
@@ -283,6 +287,7 @@ impl<M: Catalogued> CatalogScreen<M> {
                 drafts: BTreeMap::new(),
                 draft_errors: BTreeMap::new(),
                 filter: String::new(),
+                more_open: std::collections::BTreeSet::new(),
                 config: setup.config,
                 setup_plan: setup.plan,
                 error: setup.error,
@@ -450,6 +455,12 @@ impl<M: Catalogued> SettingsModule for CatalogScreen<M> {
             }
             Message::FilterChanged(q) => {
                 self.filter = q;
+                Task::none()
+            }
+            Message::MoreToggled(category) => {
+                if !self.more_open.remove(category) {
+                    self.more_open.insert(category);
+                }
                 Task::none()
             }
             Message::ImportOpen => {
@@ -631,12 +642,24 @@ impl<M: Catalogued> SettingsModule for CatalogScreen<M> {
                 continue;
             }
             any_row = true;
-            let rows: Vec<Element<'_, Message>> = rows
-                .into_iter()
-                .enumerate()
-                .map(|(i, setting)| self.setting_row(setting, i, scale))
-                .collect();
-            content = content.push(setting_rows::category_group(category.label, category.help, rows, scale));
+            // Rare settings under More — unless the filter is in use, when
+            // whatever it found is shown where it is.
+            let filtering = !self.filter.trim().is_empty();
+            let (common, rare): (Vec<&'static Setting>, Vec<&'static Setting>) =
+                rows.into_iter().partition(|s| filtering || !setting_rows::is_rare(s.key));
+            let common: Vec<Element<'_, Message>> =
+                common.into_iter().enumerate().map(|(i, setting)| self.setting_row(setting, i, scale)).collect();
+            let rare: Vec<Element<'_, Message>> =
+                rare.into_iter().enumerate().map(|(i, setting)| self.setting_row(setting, i, scale)).collect();
+            content = content.push(setting_rows::category_group_with_more(
+                category.label,
+                category.help,
+                common,
+                rare,
+                self.more_open.contains(category.key),
+                Message::MoreToggled(category.key),
+                scale,
+            ));
         }
 
         if !any_row {
@@ -647,7 +670,12 @@ impl<M: Catalogued> SettingsModule for CatalogScreen<M> {
             ));
         }
 
+        // Why a documented option is missing is for someone reading the
+        // wiki beside this page — who is someone with config names on.
         for (category, why) in M::catalog().unsupported {
+            if !crate::prefs::show_config_names() {
+                break;
+            }
             if !self.filter.trim().is_empty() && !category.contains(&self.filter.trim().to_lowercase()) {
                 continue;
             }

@@ -349,8 +349,10 @@ impl Row<'_> {
     /// bare dispatcher marked as raw when there's no entry for it.
     fn action_label(&self) -> String {
         match self.entry {
-            Some(entry) => entry.label.to_string(),
-            None => format!("{} (raw)", self.shortcut.action.dispatcher),
+            Some(entry) => described(entry, &self.shortcut.action),
+            // The dispatcher itself is shown beside it with config names
+            // on; a row that only says `window.foo (raw)` is a config line.
+            None => "Custom action".to_string(),
         }
     }
 
@@ -359,14 +361,80 @@ impl Row<'_> {
     /// Each field is lowercased only if the search gets that far — a match
     /// on the description doesn't pay to render the chord and the label.
     fn matches(&self, query: &str) -> bool {
+        let described = self.action_label();
         let action_label = match self.entry {
             Some(entry) => entry.label,
             None => self.shortcut.action.dispatcher.as_str(),
         };
-        [self.shortcut.description.as_str(), action_label]
+        [self.shortcut.description.as_str(), action_label, described.as_str(), self.shortcut.action.dispatcher.as_str()]
             .into_iter()
             .any(|field| field.to_lowercase().contains(query))
             || self.shortcut.combo.to_bind_string().to_lowercase().contains(query)
+    }
+}
+
+/// What a bind does, said with its argument: "Focus the window to the
+/// left", not four rows of "Focus window in direction" that differ only in
+/// their keys. The catalog's label is the action in general — the editor's
+/// picker wants that — and this is the action this bind takes.
+fn described(entry: &Entry, action: &hyprforge_shortcuts::model::Action) -> String {
+    let param = |key: &str| action.params.get(key).map(|v| v.as_text()).filter(|v| !v.trim().is_empty());
+    if let Some(direction) = param("direction") {
+        let place = match direction.as_str() {
+            "left" | "l" => "to the left",
+            "right" | "r" => "to the right",
+            "up" | "u" => "above",
+            "down" | "d" => "below",
+            _ => return format!("{} ({direction})", entry.label),
+        };
+        return match entry.id {
+            "focus.direction" => format!("Focus the window {place}"),
+            "window.move.direction" => format!("Move window {place}"),
+            "window.swap" => format!("Swap with the window {place}"),
+            _ => format!("{} {place}", entry.label),
+        };
+    }
+    if let Some(workspace) = param("workspace") {
+        let which = match workspace.as_str() {
+            "e+1" | "+1" | "r+1" => "the next workspace".to_string(),
+            "e-1" | "-1" | "r-1" => "the previous workspace".to_string(),
+            "previous" => "the workspace before".to_string(),
+            w => match w.strip_prefix("name:") {
+                Some(name) => format!("workspace “{name}”"),
+                None => format!("workspace {w}"),
+            },
+        };
+        return match entry.id {
+            "focus.workspace" => format!("Go to {which}"),
+            "window.move.workspace" => format!("Move window to {which}"),
+            _ => format!("{} ({which})", entry.label),
+        };
+    }
+    if let Some(cmd) = param("cmd") {
+        return format!("Run {}", cmd.trim());
+    }
+    entry.label.to_string()
+}
+
+/// A key as a keycap shows it: a word a person would say, not Hyprland's
+/// name for it. The arrow keys are spelled out rather than drawn as ← →:
+/// the monospace font draws those as specks on the baseline (the same
+/// reason `hyprforge_ui::glyph` draws its own arrows). The bind string
+/// keeps Hyprland's names; this is only how they are shown.
+fn keycap_text(part: &str) -> String {
+    match part.to_ascii_lowercase().as_str() {
+        "left" => "Left".into(),
+        "right" => "Right".into(),
+        "up" => "Up".into(),
+        "down" => "Down".into(),
+        "return" => "Enter".into(),
+        "escape" => "Esc".into(),
+        "mouse:272" => "Left button".into(),
+        "mouse:273" => "Right button".into(),
+        "mouse:274" => "Middle button".into(),
+        "mouse_down" => "Scroll down".into(),
+        "mouse_up" => "Scroll up".into(),
+        _ => part.to_string(),
     }
 }
 
@@ -1317,7 +1385,7 @@ impl SettingsModule for ShortcutsModule {
                     .combo
                     .to_bind_string()
                     .split(" + ")
-                    .map(|part| keycap(part.to_string(), scale)))
+                    .map(|part| keycap(keycap_text(part), scale)))
                 .spacing(spacing::XS)
                 .align_y(iced::Alignment::Center);
 
@@ -2021,6 +2089,44 @@ async fn regenerate_and_reload(shortcuts: Vec<Shortcut>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn act(dispatcher: &str, params: &[(&str, ParamValue)]) -> hyprforge_shortcuts::model::Action {
+        hyprforge_shortcuts::model::Action {
+            dispatcher: dispatcher.into(),
+            params: params.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+            raw: None,
+        }
+    }
+
+    /// Four rows of "Focus window in direction" told the reader nothing
+    /// their keys did not; each row now says which way.
+    #[test]
+    fn a_bind_is_described_with_its_argument() {
+        let entry = |id| hyprforge_shortcuts::catalog::by_id(id).unwrap();
+        let s = |v: &str| ParamValue::Str(v.into());
+        assert_eq!(
+            described(entry("focus.direction"), &act("focus", &[("direction", s("left"))])),
+            "Focus the window to the left"
+        );
+        assert_eq!(
+            described(entry("window.move.workspace"), &act("window.move", &[("workspace", ParamValue::Int(3))])),
+            "Move window to workspace 3"
+        );
+        assert_eq!(
+            described(entry("focus.workspace"), &act("focus", &[("workspace", s("e+1"))])),
+            "Go to the next workspace"
+        );
+        assert_eq!(described(entry("exec_cmd"), &act("exec_cmd", &[("cmd", s("kitty"))])), "Run kitty");
+        assert_eq!(described(entry("window.close"), &act("window.close", &[])), "Close window");
+    }
+
+    #[test]
+    fn arrow_keys_are_spelled_out_and_other_keys_kept_as_written() {
+        assert_eq!(keycap_text("left"), "Left");
+        assert_eq!(keycap_text("mouse:272"), "Left button");
+        assert_eq!(keycap_text("SUPER"), "SUPER");
+        assert_eq!(keycap_text("Q"), "Q");
+    }
 
     fn params(pairs: &[(&str, ParamValue)]) -> BTreeMap<String, ParamValue> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()

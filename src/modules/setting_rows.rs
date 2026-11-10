@@ -186,10 +186,10 @@ impl<'a, M: Clone + 'static> RowContext<'a, M> {
             Kind::TextEnum { default, choices } => {
                 let current = current.as_text().unwrap_or(default).to_string();
                 let options: Vec<TextChoice> =
-                    choices.iter().map(|c| TextChoice { value: c }).collect();
+                    choices.iter().map(|c| TextChoice { value: c, label: choice_label(key, c) }).collect();
                 let selected = options.iter().find(|c| c.value == current.as_str()).copied();
-                if fits_segments(options.iter().map(|c| c.value)) {
-                    segmented_choice(&options, selected.as_ref(), |c| c.value.to_string(), move |c| {
+                if fits_segments(options.iter().map(|c| c.label)) {
+                    segmented_choice(&options, selected.as_ref(), |c| c.label.to_string(), move |c| {
                         on_set(key, Value::Text(c.value.to_string()))
                     }, scale)
                 } else {
@@ -387,6 +387,55 @@ pub fn category_group<'a, M: 'a>(
     group.push(setting_list(rows)).into()
 }
 
+/// Settings almost nobody changes, kept under a group's **More** rather
+/// than among the ones people come to the page for. Still found by the
+/// page's filter and the search palette, which show them inline.
+///
+/// A list here rather than a flag in the catalogs: which options are rare
+/// is a judgement about this app's pages, not a fact about Hyprland.
+const RARE: &[&str] = &[
+    "input:kb_model",
+    "input:kb_rules",
+    "input:kb_file",
+    "input:resolve_binds_by_sym",
+];
+
+/// Whether a setting goes under its group's **More**.
+pub fn is_rare(key: &str) -> bool {
+    RARE.contains(&key)
+}
+
+/// [`category_group`] with its rare rows under a **More** that opens in
+/// place. `more` empty draws exactly what `category_group` does.
+pub fn category_group_with_more<'a, M: Clone + 'a>(
+    label: &str,
+    help: &'a str,
+    rows: Vec<Element<'a, M>>,
+    more: Vec<Element<'a, M>>,
+    open: bool,
+    toggle: M,
+    scale: FontScale,
+) -> Element<'a, M> {
+    if more.is_empty() {
+        return category_group(label, help, rows, scale);
+    }
+    let count = more.len();
+    let mut group = column![section_label(label, scale)].spacing(spacing::SM);
+    if !help.trim().is_empty() {
+        group = group.push(hint_text(help, scale));
+    }
+    if !rows.is_empty() {
+        group = group.push(setting_list(rows));
+    }
+    if open {
+        group = group.push(setting_list(more));
+        group = group.push(secondary_button("Fewer").on_press(toggle));
+    } else {
+        group = group.push(secondary_button(format!("More ({count})")).on_press(toggle));
+    }
+    group.into()
+}
+
 /// A setting's help, as a small card under the row it explains.
 fn help_bubble<'a, M: 'a>(help: &'a str, scale: FontScale) -> Element<'a, M> {
     container(hint_text(help, scale).color(theme::text()))
@@ -552,15 +601,47 @@ impl std::fmt::Display for Choice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TextChoice {
     value: &'static str,
+    /// What the control says — see [`choice_label`].
+    label: &'static str,
 }
 
 impl std::fmt::Display for TextChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.value.is_empty() {
-            f.write_str("Default")
-        } else {
-            f.write_str(self.value)
-        }
+        f.write_str(self.label)
+    }
+}
+
+/// What a closed-set text value is called on screen. The catalog holds
+/// what Hyprland reads — `dwindle`, `2fg`, `lrm`, `slave` — and a control
+/// showing those is showing config. Keyed by setting as well as value,
+/// because one word means different things in different settings
+/// (`master` is a layout in one and a slot in another). A value with no
+/// entry is shown as written, so a choice added to a catalog still draws.
+fn choice_label(key: &str, value: &'static str) -> &'static str {
+    match (key, value) {
+        (_, "") => "Default",
+        ("general:layout", "dwindle") => "Spiral",
+        ("general:layout", "master") => "Main and stack",
+        ("general:layout", "scrolling") => "Scrolling",
+        ("general:layout", "monocle") => "One at a time",
+        ("input:scroll_method", "2fg") => "Two fingers",
+        ("input:scroll_method", "edge") => "Along the edge",
+        ("input:scroll_method", "on_button_down") => "While holding a button",
+        ("input:scroll_method", "no_scroll") => "Off",
+        ("input:touchpad:tap_button_map", "lrm") => "Two fingers right-click",
+        ("input:touchpad:tap_button_map", "lmr") => "Two fingers middle-click",
+        ("master:new_status", "master") => "The main window",
+        ("master:new_status", "slave") => "Part of the stack",
+        ("master:new_status", "inherit") => "Like the focused window",
+        ("master:new_on_active", "none") => "No",
+        ("master:new_on_active", "before") => "Before it",
+        ("master:new_on_active", "after") => "After it",
+        (_, "left") => "Left",
+        (_, "right") => "Right",
+        (_, "top") => "Top",
+        (_, "bottom") => "Bottom",
+        (_, "center") => "Centre",
+        _ => value,
     }
 }
 
@@ -668,6 +749,18 @@ mod tests {
 
     /// Layout variant `""`, written by Hyprforge, showed a Reset that could
     /// only put back what was already there.
+    /// Every rare key names a real setting: a typo here would quietly
+    /// leave an option among the common ones.
+    #[test]
+    fn every_rare_key_is_a_catalogued_setting() {
+        for key in RARE {
+            let known = [&hyprforge_input::catalog::CATALOG, &hyprforge_appearance::catalog::CATALOG, &hyprforge_system::catalog::CATALOG]
+                .iter()
+                .any(|c| c.settings.iter().any(|s| s.key == *key));
+            assert!(known, "{key} is in no catalog");
+        }
+    }
+
     #[test]
     fn reset_is_offered_only_for_a_value_that_differs_from_the_default() {
         assert!(!resettable(true, &VARIANT, &Value::Text(String::new())), "already the default");

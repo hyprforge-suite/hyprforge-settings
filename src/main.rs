@@ -2147,6 +2147,11 @@ mod render {
             // App shortcuts asks the installed apps in a task, which a
             // render does not run; asked here instead, the same way.
             let _ = app.app_keys.update(modules::app_keys::Message::Loaded(modules::app_keys::ask_installed()));
+            // Window rules name apps from the installed entries, also read
+            // in a task.
+            let _ = app.window_rules.update(modules::window_rules::Message::AppsLoaded(std::sync::Arc::new(
+                hyprforge_mime::MimeDb::load(),
+            )));
             let screens = [
                 Screen::Monitors, Screen::Power, Screen::Input, Screen::DefaultApps, Screen::Network, Screen::Bluetooth,
                 Screen::WindowsWorkspaces, Screen::Shortcuts, Screen::Animations, Screen::WindowRules, Screen::Idle,

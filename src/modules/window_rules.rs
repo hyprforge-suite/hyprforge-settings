@@ -543,6 +543,7 @@ pub enum Message {
     LayerBlur(usize, bool),
     LayerEnabled(usize, bool),
     MonitorsLoaded(Vec<Monitor>),
+    AppsLoaded(std::sync::Arc<hyprforge_mime::MimeDb>),
     DraftSave,
     DraftCancel,
     Reloaded(Result<(), String>),
@@ -674,6 +675,21 @@ pub struct WindowRulesModule {
     pending_delete: Option<PendingDelete>,
     /// A row being dragged to a new place: `(from, over)`.
     drag: Option<(usize, usize)>,
+    /// The installed apps, so a rule names `com.github.hluk.copyq` as
+    /// CopyQ. Empty until the background read returns, and then the
+    /// rows read the class itself — the same words they had before.
+    apps: std::sync::Arc<hyprforge_mime::MimeDb>,
+}
+
+/// Reads the installed apps off the UI thread: every desktop entry on
+/// the machine is a few hundred small files.
+fn load_apps() -> Task<Message> {
+    Task::perform(
+        async {
+            tokio::task::spawn_blocking(hyprforge_mime::MimeDb::load).await.unwrap_or_default()
+        },
+        |db| Message::AppsLoaded(std::sync::Arc::new(db)),
+    )
 }
 
 /// Space kept free at a rule row's end for the Edit and Delete that
@@ -791,11 +807,16 @@ impl WindowRulesModule {
                 store_unreadable,
                 pending_delete: None,
                 drag: None,
+                apps: Default::default(),
             },
-            // Read the monitors up front: the workspace-pin dropdown needs
-            // them, and a failure here is silent by design — the section
-            // still lists existing pins, it just can't offer new monitors.
-            Task::perform(load_monitors(), Message::MonitorsLoaded),
+            Task::batch([
+                // Read the monitors up front: the workspace-pin dropdown
+                // needs them, and a failure here is silent by design — the
+                // section still lists existing pins, it just can't offer
+                // new monitors.
+                Task::perform(load_monitors(), Message::MonitorsLoaded),
+                load_apps(),
+            ]),
         )
     }
 
@@ -1160,6 +1181,10 @@ impl SettingsModule for WindowRulesModule {
                     None => Task::none(),
                 }
             }
+            Message::AppsLoaded(apps) => {
+                self.apps = apps;
+                Task::none()
+            }
             Message::MonitorsLoaded(monitors) => {
                 self.monitors = monitors;
                 Task::none()
@@ -1448,7 +1473,9 @@ impl SettingsModule for WindowRulesModule {
             // Which windows, in words, and what it does to them — the class
             // regex was the whole row once (`^(steam)$`), and said nothing
             // about the effect at all.
-            let summary = super::rule_summary::which(&rule.matcher);
+            let summary = super::rule_summary::which(&rule.matcher, &|class| {
+                self.apps.app_for_window(class).map(|a| a.name.clone())
+            });
             let does = super::rule_summary::what(&rule.effects);
             // An armed row swaps its whole action set for the confirm pair,
             // so the only two things that can happen next are the two the

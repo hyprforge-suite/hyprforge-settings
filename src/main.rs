@@ -2211,6 +2211,17 @@ mod render {
                 let mut renderer = iced::Renderer::Secondary(iced_tiny_skia::Renderer::new(font, iced::Pixels(theme.font_size)));
                 let size = Size::new(w, h);
                 let mut ui = UserInterface::build(app.settings_view(), size, Cache::default(), &mut renderer);
+                // One redraw event before drawing, as a window always has:
+                // a button learns its status from that event and draws as
+                // *disabled* until it has seen one, so every button in a
+                // render was faded — enabled or not.
+                let _ = ui.update(
+                    &[iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))],
+                    iced::mouse::Cursor::Unavailable,
+                    &mut renderer,
+                    &mut iced_runtime::core::clipboard::Null,
+                    &mut Vec::new(),
+                );
                 ui.draw(&mut renderer, &app.theme(window::Id::unique()), &Style { text_color: Color::WHITE }, iced::mouse::Cursor::Unavailable);
                 let iced::Renderer::Secondary(mut skia) = renderer else { unreachable!() };
                 let mut pixmap = tiny_skia::Pixmap::new(pw, ph).unwrap();

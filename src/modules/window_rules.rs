@@ -1059,6 +1059,23 @@ impl WindowRulesModule {
 impl SettingsModule for WindowRulesModule {
     type Message = Message;
 
+    /// Add rule and Import, beside the title where they never scroll
+    /// away — Keybinds' pair, in the same place. Gone while the editor or
+    /// an import review has the page.
+    fn header_actions(&self, _scale: FontScale) -> Option<Element<'_, Message>> {
+        if self.draft.is_some() || self.import_review.is_some() {
+            return None;
+        }
+        Some(
+            row![
+                secondary_button("Import from config").on_press(Message::ImportFromConfig),
+                primary_button("Add rule").on_press(Message::Add),
+            ]
+            .spacing(spacing::SM)
+            .into(),
+        )
+    }
+
     // No subtitle: it was the rule count, which the sidebar's badge
     // already says — the same number twice, once in config type.
 
@@ -1615,18 +1632,10 @@ impl SettingsModule for WindowRulesModule {
                 .on_exit(Message::RowsLeft)
                 .into()
         };
+        // Add rule and Import are the page's title-row buttons
+        // (`header_actions`), as on Keybinds: under the list they went
+        // off the bottom of the window once there were a dozen rules.
         content = content.push(column![section_label("Rules", scale), list].spacing(spacing::SM));
-        content = content.push(
-            container(
-                row![
-                    secondary_button("Import from config").on_press(Message::ImportFromConfig),
-                    primary_button("Add rule").on_press(Message::Add),
-                ]
-                .spacing(spacing::SM),
-            )
-            .width(Length::Fill)
-            .align_x(iced::alignment::Horizontal::Right),
-        );
 
         content = content.push(self.workspace_pins_view(scale));
         content = content.push(self.layer_rules_view(scale));

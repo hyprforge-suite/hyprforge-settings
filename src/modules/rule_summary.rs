@@ -14,11 +14,24 @@
 
 use hyprforge_windowrules::{Effects, Matcher};
 
-/// What an app is called, from its window class: the installed entry's
-/// `Name=` (`hyprforge_mime::MimeDb::app_for_window`), or `None` when
-/// nothing installed answers to it. A function rather than the database
-/// so the tests can say which apps exist.
-pub type AppName<'a> = &'a dyn Fn(&str) -> Option<String>;
+/// What the machine knows about the app behind a window class.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Known {
+    /// An installed entry's `Name=`
+    /// (`hyprforge_mime::MimeDb::app_for_window`).
+    Named(String),
+    /// No entry, but a program by that name runs: installed, and only
+    /// its name is missing, so the class is shown as it is.
+    Unnamed,
+    /// Neither an entry nor a program: the rule is for an app this
+    /// machine does not have, which is worth saying — a list of rules for
+    /// apps long gone reads as rules that apply.
+    Missing,
+}
+
+/// The lookup [`which`] names apps through. A function rather than the
+/// database so the tests can say which apps exist.
+pub type AppName<'a> = &'a dyn Fn(&str) -> Known;
 
 /// Which windows a rule is about: "Steam — “Friends List”", "Every
 /// window", "Windows titled Open File, Save File or Save As".
@@ -53,11 +66,19 @@ pub fn which(m: &Matcher, app_name: AppName<'_>) -> String {
         Some(false) => states.push("tiled"),
         None => {}
     }
-    if m.fullscreen == Some(true) {
-        states.push("fullscreen");
+    // Both answers are a condition. `fullscreen = false` is how a rule
+    // says "while it is not fullscreen" — Steam's Big Picture rule that
+    // puts it back — and leaving it out made that rule read as an exact
+    // copy of the one above it.
+    match m.fullscreen {
+        Some(true) => states.push("fullscreen"),
+        Some(false) => states.push("not fullscreen"),
+        None => {}
     }
-    if m.xwayland == Some(true) {
-        states.push("X11");
+    match m.xwayland {
+        Some(true) => states.push("X11"),
+        Some(false) => states.push("Wayland"),
+        None => {}
     }
     if !states.is_empty() {
         out.push_str(&format!(" ({})", states.join(", ")));
@@ -277,7 +298,10 @@ fn names(p: &str, app_name: AppName<'_>) -> String {
     let names: Vec<String> = alternatives(p)
         .into_iter()
         .map(|n| {
-            if let Some(name) = app_name(&n) {
+            // A softened pattern is not a name anything is installed under.
+            let known = if n.contains('…') { Known::Unnamed } else { app_name(&n) };
+            let missing = known == Known::Missing;
+            if let Known::Named(name) = known {
                 return name;
             }
             if n == "steam_app_…" {
@@ -289,13 +313,14 @@ fn names(p: &str, app_name: AppName<'_>) -> String {
                 // Chrome's web apps are `chrome-<32 letters>-<profile>`:
                 // the letters are an extension id, meaningless to read,
                 // and with no entry installed there is no name to give.
-                return "A Chrome web app".to_string();
+                return if missing { "A Chrome web app (not installed)" } else { "A Chrome web app" }.to_string();
             }
-            if n.matches('.').count() >= 2 && !n.contains(' ') {
+            let shown = if n.matches('.').count() >= 2 && !n.contains(' ') {
                 n.rsplit('.').next().unwrap_or(&n).to_string()
             } else {
                 n
-            }
+            };
+            if missing { format!("{shown} (not installed)") } else { shown }
         })
         .collect();
     join_or(&names)
@@ -334,11 +359,11 @@ mod tests {
     use super::*;
 
     /// An installed CopyQ and Steam, and nothing else.
-    fn installed(class: &str) -> Option<String> {
+    fn installed(class: &str) -> Known {
         match class {
-            "com.github.hluk.copyq" => Some("CopyQ".into()),
-            "steam" => Some("Steam".into()),
-            _ => None,
+            "com.github.hluk.copyq" => Known::Named("CopyQ".into()),
+            "steam" => Known::Named("Steam".into()),
+            _ => Known::Unnamed,
         }
     }
 
@@ -373,6 +398,14 @@ mod tests {
             "Steam — “Friends List”"
         );
         assert_eq!(
+            which(&Matcher {
+                fullscreen: Some(false),
+                ..matcher(Some("^(steam)$"), Some("^(Steam Big Picture Mode)$"))
+            }),
+            "Steam — “Steam Big Picture Mode” (not fullscreen)",
+            "a rule that only differs in this condition must not read as a copy"
+        );
+        assert_eq!(
             which(&matcher(Some("^(steam)$"), Some("negative:^(Friends List|Steam Big Picture Mode)$"))),
             "Steam, except “Friends List” or “Steam Big Picture Mode”"
         );
@@ -380,15 +413,26 @@ mod tests {
 
     #[test]
     fn an_app_with_no_entry_installed_still_reads_as_a_name() {
-        let gone = |_: &str| None;
-        assert_eq!(super::which(&matcher(Some("^(com.github.hluk.copyq)$"), None), &gone), "copyq");
+        let nameless = |_: &str| Known::Unnamed;
+        assert_eq!(super::which(&matcher(Some("^(com.github.hluk.copyq)$"), None), &nameless), "copyq");
         assert_eq!(
-            super::which(&matcher(Some("^(chrome-nngceckbapebfimnlniiiahkandclblb-Default)$"), None), &gone),
+            super::which(&matcher(Some("^(chrome-nngceckbapebfimnlniiiahkandclblb-Default)$"), None), &nameless),
             "A Chrome web app"
         );
+        let gone = |_: &str| Known::Missing;
+        assert_eq!(
+            super::which(&matcher(Some("^(com.github.hluk.copyq)$"), None), &gone),
+            "copyq (not installed)"
+        );
+        assert_eq!(
+            super::which(&matcher(Some("^(chrome-nngceckbapebfimnlniiiahkandclblb-Default)$"), None), &gone),
+            "A Chrome web app (not installed)"
+        );
+        // A pattern is never claimed missing: nothing is installed under `…`.
+        assert_eq!(super::which(&matcher(Some(r"^(steam_app_\d+)$"), None), &gone), "Steam games");
         // Not an id: 32 letters, but `z` is not one Chrome uses.
         assert_eq!(
-            super::which(&matcher(Some("^(chrome-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-Default)$"), None), &gone),
+            super::which(&matcher(Some("^(chrome-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-Default)$"), None), &nameless),
             "chrome-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-Default"
         );
     }

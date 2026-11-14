@@ -679,6 +679,10 @@ pub struct WindowRulesModule {
     /// CopyQ. Empty until the background read returns, and then the
     /// rows read the class itself — the same words they had before.
     apps: std::sync::Arc<hyprforge_mime::MimeDb>,
+    /// What each class came to, asked once: "is a program by this name
+    /// on `$PATH`" is a directory search, and `view` runs on every hover.
+    /// Cleared when `apps` arrives, since the answers change with it.
+    known: std::cell::RefCell<std::collections::HashMap<String, super::rule_summary::Known>>,
 }
 
 /// Reads the installed apps off the UI thread: every desktop entry on
@@ -808,6 +812,7 @@ impl WindowRulesModule {
                 pending_delete: None,
                 drag: None,
                 apps: Default::default(),
+                known: Default::default(),
             },
             Task::batch([
                 // Read the monitors up front: the workspace-pin dropdown
@@ -1024,15 +1029,38 @@ impl WindowRulesModule {
     }
 }
 
+impl WindowRulesModule {
+    /// What the machine knows about the app behind `class`, cached.
+    ///
+    /// Until the installed apps have been read nothing is claimed
+    /// missing: an empty database would call every rule's app gone.
+    fn known(&self, class: &str) -> super::rule_summary::Known {
+        use super::rule_summary::Known;
+        if let Some(app) = self.apps.app_for_window(class) {
+            return Known::Named(app.name.clone());
+        }
+        if self.apps.all_apps().is_empty() {
+            return Known::Unnamed;
+        }
+        self.known
+            .borrow_mut()
+            .entry(class.to_string())
+            .or_insert_with(|| {
+                if hyprforge_mime::apps::on_path(class) || hyprforge_mime::apps::on_path(&class.to_lowercase()) {
+                    Known::Unnamed
+                } else {
+                    Known::Missing
+                }
+            })
+            .clone()
+    }
+}
+
 impl SettingsModule for WindowRulesModule {
     type Message = Message;
 
-    fn subtitle(&self) -> Option<String> {
-        Some(match self.rules.len() {
-            1 => "1 rule".into(),
-            n => format!("{n} rules"),
-        })
-    }
+    // No subtitle: it was the rule count, which the sidebar's badge
+    // already says — the same number twice, once in config type.
 
     /// How many rules there are, as in the mockup's `Window rules  14`.
     fn nav_badge(&self) -> Option<crate::module::NavBadge> {
@@ -1183,6 +1211,7 @@ impl SettingsModule for WindowRulesModule {
             }
             Message::AppsLoaded(apps) => {
                 self.apps = apps;
+                self.known.borrow_mut().clear();
                 Task::none()
             }
             Message::MonitorsLoaded(monitors) => {
@@ -1473,9 +1502,7 @@ impl SettingsModule for WindowRulesModule {
             // Which windows, in words, and what it does to them — the class
             // regex was the whole row once (`^(steam)$`), and said nothing
             // about the effect at all.
-            let summary = super::rule_summary::which(&rule.matcher, &|class| {
-                self.apps.app_for_window(class).map(|a| a.name.clone())
-            });
+            let summary = super::rule_summary::which(&rule.matcher, &|class| self.known(class));
             let does = super::rule_summary::what(&rule.effects);
             // An armed row swaps its whole action set for the confirm pair,
             // so the only two things that can happen next are the two the

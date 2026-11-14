@@ -9,7 +9,9 @@ lock, Session, Advanced) and Personal (Appearance, Wallpaper, Night light,
 Screen sharing, Tray, App shortcuts) — `src/main.rs`'s `Screen` enum and `NAV`. A search
 palette in the header finds any page or setting, by its name or its
 config key. Config names are hidden unless Advanced → **Show config
-names** is on (`src/prefs.rs`, stored in `settings-app.toml`).
+names** is on, and the header's sidebar button collapses the sidebar
+to its pages' icons (both in `src/prefs.rs`, stored in
+`settings-app.toml`).
 
 App shortcuts edits the keys of the suite's own apps — Files and Media —
 which Settings cannot link against: it runs each installed app's

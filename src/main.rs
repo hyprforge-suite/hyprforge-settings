@@ -795,6 +795,8 @@ enum Message {
     ExternalRequest(ipc::Signal),
     /// The Advanced page's "Show config names" switch — see `prefs`.
     ShowConfigNames(bool),
+    /// The header's sidebar button: the full sidebar, or its icons alone.
+    ToggleSidebar,
     Noop,
 }
 
@@ -1138,6 +1140,16 @@ impl App {
             Message::ShowConfigNames(on) => {
                 self.prefs.show_config_names = on;
                 self.prefs_error = prefs::save(&self.prefs).err().map(|e| format!("Couldn't save this: {e}"));
+                Task::none()
+            }
+            Message::ToggleSidebar => {
+                self.prefs.sidebar_collapsed = !self.prefs.sidebar_collapsed;
+                // Collapsed for this session even if it can't be kept;
+                // a sidebar button is no place for an error, so it is
+                // logged rather than shown.
+                if let Err(e) = prefs::save(&self.prefs) {
+                    tracing::warn!(error = %e, "couldn't save whether the sidebar is collapsed");
+                }
                 Task::none()
             }
             Message::Noop => Task::none(),
@@ -1715,9 +1727,20 @@ impl App {
         )
         .width(Length::Fill);
 
+        // The sidebar's button first, where the sidebar begins, as in
+        // Files and Media; collapsed, the header's left end is as narrow
+        // as the strip below it and holds the button alone.
+        let toggle = hyprforge_ui::widgets::sidebar_toggle(!self.prefs.sidebar_collapsed, Message::ToggleSidebar, scale);
+        let start: Element<'_, Message> = if self.prefs.sidebar_collapsed {
+            container(toggle).width(Length::Fixed(hyprforge_ui::widgets::NAV_RAIL_WIDTH - spacing::MD)).into()
+        } else {
+            container(row![toggle, brand].spacing(spacing::SM).align_y(iced::Alignment::Center))
+                .width(Length::Fixed(SIDEBAR_WIDTH - spacing::MD))
+                .into()
+        };
         container(
             row![
-                container(brand).width(Length::Fixed(SIDEBAR_WIDTH - spacing::MD)),
+                start,
                 search,
                 // Said only while something is held back. The everyday state
                 // — what the page shows is what is running — needs no badge;
@@ -1760,7 +1783,11 @@ impl App {
                 items: category.screens.iter().map(|screen| self.nav_item(*screen, scale)).collect(),
             })
             .collect();
-        hyprforge_ui::widgets::nav_sidebar(groups, SIDEBAR_WIDTH, scale)
+        if self.prefs.sidebar_collapsed {
+            hyprforge_ui::widgets::nav_rail(groups, scale)
+        } else {
+            hyprforge_ui::widgets::nav_sidebar(groups, SIDEBAR_WIDTH, scale)
+        }
     }
 
     /// One page's entry in the sidebar: its mark, its name, and whatever
@@ -1774,7 +1801,12 @@ impl App {
         // an accent mark on an accent fill disappeared into it.
         let mark_color = if selected { text() } else { text_dim() };
         let badge: Option<Element<'_, Message>> = match self.badge_for(screen) {
-            Some(NavBadge::Text(t)) => Some(config_line(t, scale).into()),
+            // In the row's own type, not config type: a count is not a
+            // config name. The text colour on the selected row — dim on
+            // the accent fill, it all but disappeared.
+            Some(NavBadge::Text(t)) => {
+                Some(scaled_text(t, density::ROW_TEXT_BASE * 0.8, scale).color(if selected { text() } else { text_dim() }).into())
+            }
             Some(NavBadge::Dot(tint)) => Some(status_dot(tint, scale)),
             None => None,
         };
@@ -2158,8 +2190,15 @@ mod render {
                 Screen::Session, Screen::System, Screen::Appearance, Screen::Wallpaper, Screen::NightLight, Screen::Sharing,
                 Screen::Tray, Screen::AppShortcuts, Screen::Setup,
             ];
-            for screen in screens {
+            // Every screen as it opens, then two with the sidebar collapsed
+            // to its icons, as `<screen>-collapsed`.
+            let shots_to_take = screens
+                .into_iter()
+                .map(|s| (s, false))
+                .chain([(Screen::WindowRules, true), (Screen::Monitors, true)]);
+            for (screen, collapsed) in shots_to_take {
                 app.screen = screen;
+                app.prefs.sidebar_collapsed = collapsed;
                 // What a sidebar click does after setting the screen.
                 // Without it Appearance and Desktop draw whichever tab
                 // they were last told — every one of Desktop's pages
@@ -2182,7 +2221,7 @@ mod render {
                 for px in pixmap.data_mut().chunks_exact_mut(4) {
                     px.swap(0, 2);
                 }
-                let name = format!("{screen:?}").to_lowercase();
+                let name = format!("{screen:?}{}", if collapsed { "-collapsed" } else { "" }).to_lowercase();
                 pixmap.save_png(std::path::Path::new(&shots).join(format!("settings-{name}.png"))).unwrap();
             }
         });

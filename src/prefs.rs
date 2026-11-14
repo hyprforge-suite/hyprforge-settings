@@ -1,7 +1,8 @@
 //! The Settings app's own preferences — how it shows things, never what
 //! it writes into anyone's config.
 //!
-//! One so far: whether rows show their Hyprland name. A settings app is
+//! Whether rows show their Hyprland name, and whether the sidebar is
+//! collapsed to its icons. A settings app is
 //! for people who would rather not edit config files, so by default it
 //! does not show them the config — no `general:gaps_in = 5` under "Gaps
 //! between windows", no "set by hyprforge" chip, no generated Lua at the
@@ -25,6 +26,9 @@ pub struct Prefs {
     /// and the files a page writes.
     #[serde(default)]
     pub show_config_names: bool,
+    /// The sidebar collapsed to a strip of the pages' icons.
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
 }
 
 thread_local! {
@@ -87,10 +91,21 @@ mod tests {
     fn the_switch_is_saved_and_read_back() {
         crate::modules::with_temp_env(|_dir| {
             assert_eq!(load(), Prefs::default(), "a missing file is a first run");
-            save(&Prefs { show_config_names: true }).unwrap();
+            save(&Prefs { show_config_names: true, ..Prefs::default() }).unwrap();
             set_show_config_names(false);
             assert!(load().show_config_names);
             assert!(show_config_names(), "loading applies it");
+        });
+    }
+
+    #[test]
+    fn a_collapsed_sidebar_stays_collapsed_and_an_older_file_reads() {
+        crate::modules::with_temp_env(|_dir| {
+            save(&Prefs { sidebar_collapsed: true, ..Prefs::default() }).unwrap();
+            assert!(load().sidebar_collapsed);
+            // A file from before the sidebar could collapse: open, not an error.
+            std::fs::write(path(), "show_config_names = true\n").unwrap();
+            assert_eq!(load(), Prefs { show_config_names: true, sidebar_collapsed: false });
         });
     }
 
